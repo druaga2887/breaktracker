@@ -46,7 +46,8 @@ jobs:
           echo "ADMIN_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('login.json','utf8')).token")" >> $GITHUB_ENV
 
       - name: Create department
-        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
+        env:
+          ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           DNAME="CI Dept $GITHUB_RUN_NUMBER"
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
@@ -55,7 +56,8 @@ jobs:
           grep -q '"id":' dep.json
 
       - name: Create team (auto-pick department)
-        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
+        env:
+          ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           TNAME="CI Team $GITHUB_RUN_NUMBER"
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
@@ -64,7 +66,8 @@ jobs:
           grep -q '"id":' team.json
 
       - name: Create break type
-        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
+        env:
+          ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           BNAME="CI Break $GITHUB_RUN_NUMBER"
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
@@ -88,9 +91,10 @@ jobs:
             http://localhost:3001/api/breaks/stop | tee stop.json
           grep -q '"success":true' stop.json
 
-      # ---- NEW: user create -> default login -> change pw -> login again ----
+      # ---- Users flow ----
       - name: Create user (no password -> must_change_password)
-        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
+        env:
+          ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
           U="ciuser_$GITHUB_RUN_NUMBER"
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
@@ -100,7 +104,8 @@ jobs:
           echo "NEWUSER=$U" >> $GITHUB_ENV
 
       - name: Login as new user with default password
-        env: { NEWUSER: ${{ env.NEWUSER }} }
+        env:
+          NEWUSER: ${{ env.NEWUSER }}
         run: |
           curl -fsS -H "Content-Type: application/json" \
             -d "{\"username\":\"$NEWUSER\",\"password\":\"ChangeMe123!\"}" \
@@ -109,7 +114,8 @@ jobs:
           echo "USER_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('ulogin.json','utf8')).token")" >> $GITHUB_ENV
 
       - name: Change new user password
-        env: { USER_TOKEN: ${{ env.USER_TOKEN }} }
+        env:
+          USER_TOKEN: ${{ env.USER_TOKEN }}
         run: |
           curl -fsS -H "Authorization: Bearer $USER_TOKEN" -H "Content-Type: application/json" \
             -d "{\"current_password\":\"ChangeMe123!\",\"new_password\":\"NewCIPass123!\"}" \
@@ -117,7 +123,8 @@ jobs:
           grep -q '"success":true' cp.json
 
       - name: Re-login with new password
-        env: { NEWUSER: ${{ env.NEWUSER }} }
+        env:
+          NEWUSER: ${{ env.NEWUSER }}
         run: |
           curl -fsS -H "Content-Type: application/json" \
             -d "{\"username\":\"$NEWUSER\",\"password\":\"NewCIPass123!\"}" \
