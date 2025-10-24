@@ -1,0 +1,44 @@
+name: Break Tracker CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install backend deps
+        working-directory: backend
+        run: npm i --no-audit --no-fund
+
+      - name: Start backend
+        working-directory: backend
+        env:
+          PORT: 3001
+        run: |
+          node server.js & echo $! > server.pid
+          # wait for health to be ready
+          for i in {1..30}; do
+            curl -fsS http://localhost:3001/api/health && break
+            sleep 1
+          done
+
+      - name: Health check
+        run: |
+          curl -fsS http://localhost:3001/api/health | tee health.json
+          grep -q '"status":"ok"' health.json
+
+      - name: Stop backend
+        if: always()
+        working-directory: backend
+        run: kill -9 $(cat server.pid) || true
