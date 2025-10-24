@@ -39,6 +39,13 @@ function all(sql, params = []) {
 }
 
 // ---------- bootstrap schema & seed ----------
+async function ensureColumn(table, col, defSql) {
+  const cols = await all(`PRAGMA table_info(${table})`);
+  if (!cols.find(c => c.name === col)) {
+    await run(`ALTER TABLE ${table} ADD COLUMN ${col} ${defSql}`);
+  }
+}
+
 async function init() {
   await run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -94,6 +101,10 @@ async function init() {
     )
   `);
 
+  // make sure employees has linking columns even if table existed from earlier steps
+  await ensureColumn('employees', 'department_id', 'INTEGER');
+  await ensureColumn('employees', 'team_id', 'INTEGER');
+
   await run(`
     CREATE TABLE IF NOT EXISTS breaks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,7 +153,7 @@ function auth(req, res, next) {
 
 // ---------- routes ----------
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '0.5.0' });
+  res.json({ status: 'ok', version: '0.6.0' });
 });
 
 // auth
@@ -172,7 +183,7 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// users (NEW)
+// users
 app.post('/api/users', auth, async (req, res) => {
   try {
     const { username, password, name } = req.body || {};
@@ -318,6 +329,60 @@ app.post('/api/breaks/stop', auth, async (req, res) => {
     await run(`UPDATE breaks SET end_time = ?, duration = ? WHERE id = ?`, [end.toISOString(), duration, br.id]);
     res.json({ success: true, duration });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
+});
+
+/* --------- NEW: Employees CRUD (minimal) --------- */
+
+app.get('/api/employees', auth, async (_req, res) => {
+  try { res.json(await all(`SELECT * FROM employees ORDER BY id ASC`)); }
+  catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
+});
+
+app.post('/api/employees', auth, async (req, res) => {
+  try {
+    const { user_id, name, department_id, team_id, status } = req.body || {};
+    if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+
+    if (user_id) {
+      const u = await get(`SELECT id FROM users WHERE id = ?`, [user_id]);
+      if (!u) return res.status(400).json({ error: 'invalid user_id' });
+    }
+    if (department_id) {
+      const d = await get(`SELECT id FROM departments WHERE id = ?`, [department_id]);
+      if (!d) return res.status(400).json({ error: 'invalid department_id' });
+    }
+    if (team_id) {
+      const t = await get(`SELECT id FROM teams WHERE id = ?`, [team_id]);
+      if (!t) return res.status(400).json({ error: 'invalid team_id' });
+    }
+
+    const r = await run(
+      `INSERT INTO employees (user_id, name, department_id, team_id, status) VALUES (?, ?, ?, ?, ?)`,
+      [user_id || null, name.trim(), department_id || null, team_id || null, status || 'Active']
+    );
+    res.status(201).json({ id: r.lastID, name: name.trim(), user_id: user_id || null, department_id: department_id || null, team_id: team_id || null, status: status || 'Active' });
+  } catch (e) {
+    if (String(e).includes('UNIQUE') && String(e).includes('user_id')) return res.status(409).json({ error: 'employee for this user already exists' });
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/employees/:id', auth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { name, department_id, team_id, status, user_id } = req.body || {};
+    const fields = [], vals = [];
+    if (name !== undefined) { fields.push('name = ?'); vals.push(String(name || '')); }
+    if (department_id !== undefined) { fields.push('department_id = ?'); vals.push(department_id || null); }
+    if (team_id !== undefined) { fields.push('team_id = ?'); vals.push(team_id || null); }
+    if (status !== undefined) { fields.push('status = ?'); vals.push(String(status || 'Active')); }
+    if (user_id !== undefined) { fields.push('user_id = ?'); vals.push(user_id || null); }
+    if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
+    vals.push(id);
+    const r = await run(`UPDATE employees SET ${fields.join(', ')} WHERE id = ?`, vals);
+    res.json({ success: true, changes: r.changes });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // ---------- start ----------
