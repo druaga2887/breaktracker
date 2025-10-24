@@ -43,57 +43,86 @@ jobs:
             -d '{"username":"admin","password":"admin123"}' \
             http://localhost:3001/api/auth/login | tee login.json
           grep -q '"token"' login.json
-          echo "TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('login.json','utf8')).token")" >> $GITHUB_ENV
+          echo "ADMIN_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('login.json','utf8')).token")" >> $GITHUB_ENV
 
       - name: Create department
-        env:
-          TOKEN: ${{ env.TOKEN }}
+        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
         run: |
           DNAME="CI Dept $GITHUB_RUN_NUMBER"
-          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
             -d "{\"name\":\"$DNAME\"}" \
             http://localhost:3001/api/departments | tee dep.json
           grep -q '"id":' dep.json
 
       - name: Create team (auto-pick department)
-        env:
-          TOKEN: ${{ env.TOKEN }}
+        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
         run: |
           TNAME="CI Team $GITHUB_RUN_NUMBER"
-          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
             -d "{\"name\":\"$TNAME\"}" \
             http://localhost:3001/api/teams | tee team.json
           grep -q '"id":' team.json
 
       - name: Create break type
-        env:
-          TOKEN: ${{ env.TOKEN }}
+        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
         run: |
           BNAME="CI Break $GITHUB_RUN_NUMBER"
-          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
             -d "{\"name\":\"$BNAME\",\"color\":\"#ccc\"}" \
             http://localhost:3001/api/break-types | tee bt.json
           grep -q '"id":' bt.json
           echo "BT_ID=$(node -p "JSON.parse(require('fs').readFileSync('bt.json','utf8')).id")" >> $GITHUB_ENV
 
-      - name: Start break
+      - name: Start & Stop break as admin
         env:
-          TOKEN: ${{ env.TOKEN }}
+          ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
           BT_ID: ${{ env.BT_ID }}
         run: |
-          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
             -d "{\"break_type_id\":$BT_ID}" \
             http://localhost:3001/api/breaks/start | tee start.json
           grep -q '"id":' start.json
 
-      - name: Stop break
-        env:
-          TOKEN: ${{ env.TOKEN }}
-        run: |
-          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
             -d "{}" \
             http://localhost:3001/api/breaks/stop | tee stop.json
           grep -q '"success":true' stop.json
+
+      # ---- NEW: user create -> default login -> change pw -> login again ----
+      - name: Create user (no password -> must_change_password)
+        env: { ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }} }
+        run: |
+          U="ciuser_$GITHUB_RUN_NUMBER"
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"username\":\"$U\",\"name\":\"CI User\"}" \
+            http://localhost:3001/api/users | tee user.json
+          grep -q '"id":' user.json
+          echo "NEWUSER=$U" >> $GITHUB_ENV
+
+      - name: Login as new user with default password
+        env: { NEWUSER: ${{ env.NEWUSER }} }
+        run: |
+          curl -fsS -H "Content-Type: application/json" \
+            -d "{\"username\":\"$NEWUSER\",\"password\":\"ChangeMe123!\"}" \
+            http://localhost:3001/api/auth/login | tee ulogin.json
+          grep -q '"token"' ulogin.json
+          echo "USER_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('ulogin.json','utf8')).token")" >> $GITHUB_ENV
+
+      - name: Change new user password
+        env: { USER_TOKEN: ${{ env.USER_TOKEN }} }
+        run: |
+          curl -fsS -H "Authorization: Bearer $USER_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"current_password\":\"ChangeMe123!\",\"new_password\":\"NewCIPass123!\"}" \
+            http://localhost:3001/api/auth/change-password | tee cp.json
+          grep -q '"success":true' cp.json
+
+      - name: Re-login with new password
+        env: { NEWUSER: ${{ env.NEWUSER }} }
+        run: |
+          curl -fsS -H "Content-Type: application/json" \
+            -d "{\"username\":\"$NEWUSER\",\"password\":\"NewCIPass123!\"}" \
+            http://localhost:3001/api/auth/login | tee ulogin2.json
+          grep -q '"token"' ulogin2.json
 
       - name: Stop backend
         if: always()
