@@ -55,7 +55,7 @@ jobs:
             http://localhost:3001/api/departments | tee dep.json
           grep -q '"id":' dep.json
 
-      - name: Create team (no department_id, should auto-pick)
+      - name: Create team (auto-pick department)
         env:
           TOKEN: ${{ env.TOKEN }}
         run: |
@@ -64,6 +64,36 @@ jobs:
             -d "{\"name\":\"$TNAME\"}" \
             http://localhost:3001/api/teams | tee team.json
           grep -q '"id":' team.json
+
+      - name: Create break type
+        env:
+          TOKEN: ${{ env.TOKEN }}
+        run: |
+          BNAME="CI Break $GITHUB_RUN_NUMBER"
+          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d "{\"name\":\"$BNAME\",\"color\":\"#ccc\"}" \
+            http://localhost:3001/api/break-types | tee bt.json
+          grep -q '"id":' bt.json
+          echo "BT_ID=$(node -p "JSON.parse(require('fs').readFileSync('bt.json','utf8')).id")" >> $GITHUB_ENV
+
+      - name: Start break
+        env:
+          TOKEN: ${{ env.TOKEN }}
+          BT_ID: ${{ env.BT_ID }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d "{\"break_type_id\":$BT_ID}" \
+            http://localhost:3001/api/breaks/start | tee start.json
+          grep -q '"id":' start.json
+
+      - name: Stop break
+        env:
+          TOKEN: ${{ env.TOKEN }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d "{}" \
+            http://localhost:3001/api/breaks/stop | tee stop.json
+          grep -q '"success":true' stop.json
 
       - name: Stop backend
         if: always()
