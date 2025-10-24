@@ -37,12 +37,33 @@ jobs:
           curl -fsS http://localhost:3001/api/health | tee health.json
           grep -q '"status":"ok"' health.json
 
-      - name: Login smoke
+      - name: Login (admin/admin123)
         run: |
           curl -fsS -H "Content-Type: application/json" \
             -d '{"username":"admin","password":"admin123"}' \
             http://localhost:3001/api/auth/login | tee login.json
           grep -q '"token"' login.json
+          echo "TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('login.json','utf8')).token")" >> $GITHUB_ENV
+
+      - name: Create department
+        env:
+          TOKEN: ${{ env.TOKEN }}
+        run: |
+          DNAME="CI Dept $GITHUB_RUN_NUMBER"
+          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d "{\"name\":\"$DNAME\"}" \
+            http://localhost:3001/api/departments | tee dep.json
+          grep -q '"id":' dep.json
+
+      - name: Create team (no department_id, should auto-pick)
+        env:
+          TOKEN: ${{ env.TOKEN }}
+        run: |
+          TNAME="CI Team $GITHUB_RUN_NUMBER"
+          curl -fsS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -d "{\"name\":\"$TNAME\"}" \
+            http://localhost:3001/api/teams | tee team.json
+          grep -q '"id":' team.json
 
       - name: Stop backend
         if: always()
