@@ -45,7 +45,8 @@ async function init() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
-      must_change_password INTEGER DEFAULT 1
+      must_change_password INTEGER DEFAULT 1,
+      name TEXT DEFAULT ''
     )
   `);
 
@@ -72,7 +73,6 @@ async function init() {
     )
   `);
 
-  /* NEW */
   await run(`
     CREATE TABLE IF NOT EXISTS break_types (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,8 +112,8 @@ async function init() {
   if (!admin) {
     const hashed = bcrypt.hashSync('admin123', 10);
     await run(
-      `INSERT INTO users (username, password, must_change_password) VALUES (?,?,1)`,
-      ['admin', hashed]
+      `INSERT INTO users (username, password, must_change_password, name) VALUES (?,?,1,?)`,
+      ['admin', hashed, 'Admin']
     );
     admin = await get(`SELECT * FROM users WHERE username = 'admin'`);
     console.log('Seeded admin / admin123');
@@ -142,7 +142,7 @@ function auth(req, res, next) {
 
 // ---------- routes ----------
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '0.4.0' });
+  res.json({ status: 'ok', version: '0.5.0' });
 });
 
 // auth
@@ -172,7 +172,48 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// departments (unchanged)
+// users (NEW)
+app.post('/api/users', auth, async (req, res) => {
+  try {
+    const { username, password, name } = req.body || {};
+    if (!username || !username.trim()) return res.status(400).json({ error: 'username required' });
+    const useDefault = !password || !password.length;
+    const effective = useDefault ? 'ChangeMe123!' : String(password);
+    const hashed = bcrypt.hashSync(effective, 10);
+    const must = useDefault ? 1 : 0;
+    const r = await run(
+      `INSERT INTO users (username, password, must_change_password, name) VALUES (?, ?, ?, ?)`,
+      [username.trim(), hashed, must, String(name || '')]
+    );
+    res.status(201).json({ id: r.lastID, username: username.trim(), must_change_password: !!must });
+  } catch (e) {
+    if (String(e).includes('UNIQUE')) return res.status(409).json({ error: 'username exists' });
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/users/:id', auth, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { name, new_password, must_change_password } = req.body || {};
+    const fields = [], vals = [];
+    if (name !== undefined) { fields.push('name = ?'); vals.push(String(name || '')); }
+    if (new_password) {
+      fields.push('password = ?'); vals.push(bcrypt.hashSync(String(new_password), 10));
+      if (typeof must_change_password === 'undefined') { fields.push('must_change_password = 1'); }
+    }
+    if (typeof must_change_password !== 'undefined') {
+      fields.push('must_change_password = ?'); vals.push(must_change_password ? 1 : 0);
+    }
+    if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
+    vals.push(id);
+    const r = await run(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, vals);
+    res.json({ success: true, changes: r.changes });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// departments
 app.get('/api/departments', auth, async (_req, res) => {
   try { res.json(await all(`SELECT * FROM departments ORDER BY id ASC`)); }
   catch { res.status(500).json({ error: 'Database error' }); }
@@ -220,9 +261,8 @@ app.post('/api/teams', auth, async (req, res) => {
   }
 });
 
-/* --------- NEW: Break Types + Breaks --------- */
+/* --------- Break Types + Breaks --------- */
 
-// create break type
 app.post('/api/break-types', auth, async (req, res) => {
   const { name, color } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
@@ -238,7 +278,6 @@ app.post('/api/break-types', auth, async (req, res) => {
   }
 });
 
-// start break (auto-create employee row for the user if missing)
 app.post('/api/breaks/start', auth, async (req, res) => {
   const { break_type_id } = req.body || {};
   if (!break_type_id) return res.status(400).json({ error: 'break_type_id is required' });
@@ -264,7 +303,6 @@ app.post('/api/breaks/start', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
-// stop break
 app.post('/api/breaks/stop', auth, async (req, res) => {
   try {
     const emp = await get(`SELECT id FROM employees WHERE user_id = ?`, [req.user.id]);
