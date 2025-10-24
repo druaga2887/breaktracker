@@ -1,6 +1,6 @@
 {
   "name": "break-tracker-backend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
@@ -8,6 +8,11 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "sqlite3": "^5.1.7"
   }
 }
