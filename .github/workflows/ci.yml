@@ -183,6 +183,13 @@ jobs:
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
             "http://localhost:3001/api/reports/usage?group=employee" | tee rep.json
           node -e "const a=JSON.parse(require('fs').readFileSync('rep.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee missing from report');"
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_API_URL: http://localhost:3001
+        run: |
+          npm i --no-audit --no-fund
+          npm run build
 
       - name: Stop backend
         if: always()
