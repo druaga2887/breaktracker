@@ -23,9 +23,7 @@ export default function App() {
         setSelectedBt(types[0]?.id || null);
         const rows = await api('/api/status/live', { token });
         setLive(rows);
-      } catch (e) {
-        setMsg(String(e.message || e));
-      }
+      } catch (e) { setMsg(String(e.message || e)); }
     };
     load();
     const id = setInterval(load, 5000);
@@ -39,9 +37,7 @@ export default function App() {
       const r = await api('/api/auth/login', { method: 'POST', body: user });
       setToken(r.token);
       localStorage.setItem('bt_token', r.token);
-    } catch (e) {
-      setMsg(String(e.message || e));
-    }
+    } catch (e) { setMsg(String(e.message || e)); }
   };
 
   const startBreak = async () => {
@@ -103,9 +99,7 @@ export default function App() {
           <table>
             <thead><tr><th>Employee</th><th>Team</th><th>Department</th><th>Type</th><th>Started</th></tr></thead>
             <tbody>
-            {live.length === 0 && (
-              <tr><td colSpan="5" className="muted">No active breaks</td></tr>
-            )}
+            {live.length === 0 && (<tr><td colSpan="5" className="muted">No active breaks</td></tr>)}
             {live.map(r => (
               <tr key={r.break_id}>
                 <td>{r.employee_name}</td>
