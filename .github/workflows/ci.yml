@@ -116,6 +116,7 @@ jobs:
             -d "{\"user_id\":$NEWUSER_ID,\"name\":\"CI Employee\",\"department_id\":$DEP_ID,\"team_id\":$TEAM_ID}" \
             http://localhost:3001/api/employees | tee emp.json
           grep -q '"id":' emp.json
+          echo "EMP_ID=$(node -p "JSON.parse(require('fs').readFileSync('emp.json','utf8')).id")" >> $GITHUB_ENV
 
       - name: Login as new user with default password
         env:
@@ -146,7 +147,7 @@ jobs:
           grep -q '"token"' ulogin2.json
           echo "USER2_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('ulogin2.json','utf8')).token")" >> $GITHUB_ENV
 
-      - name: Start & Stop break as new user
+      - name: Start live break as new user
         env:
           USER2_TOKEN: ${{ env.USER2_TOKEN }}
           BT_ID: ${{ env.BT_ID }}
@@ -156,10 +157,32 @@ jobs:
             http://localhost:3001/api/breaks/start | tee start2.json
           grep -q '"id":' start2.json
 
+      - name: Check live status includes this employee
+        env:
+          ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
+          EMP_ID: ${{ env.EMP_ID }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
+            http://localhost:3001/api/status/live | tee live.json
+          node -e "const a=JSON.parse(require('fs').readFileSync('live.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee not in live status');"
+
+      - name: Stop that live break
+        env:
+          USER2_TOKEN: ${{ env.USER2_TOKEN }}
+        run: |
           curl -fsS -H "Authorization: Bearer $USER2_TOKEN" -H "Content-Type: application/json" \
             -d "{}" \
             http://localhost:3001/api/breaks/stop | tee stop2.json
           grep -q '"success":true' stop2.json
+
+      - name: Usage report by employee (should include the new employee)
+        env:
+          ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
+          EMP_ID: ${{ env.EMP_ID }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
+            "http://localhost:3001/api/reports/usage?group=employee" | tee rep.json
+          node -e "const a=JSON.parse(require('fs').readFileSync('rep.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee missing from report');"
 
       - name: Stop backend
         if: always()
