@@ -97,13 +97,11 @@ async function init() {
       name TEXT NOT NULL,
       status TEXT DEFAULT 'Active',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      department_id INTEGER,
+      team_id INTEGER,
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
   `);
-
-  // make sure employees has linking columns even if table existed from earlier steps
-  await ensureColumn('employees', 'department_id', 'INTEGER');
-  await ensureColumn('employees', 'team_id', 'INTEGER');
 
   await run(`
     CREATE TABLE IF NOT EXISTS breaks (
@@ -151,9 +149,15 @@ function auth(req, res, next) {
   }
 }
 
+function parseIso(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d) ? null : d.toISOString();
+}
+
 // ---------- routes ----------
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '0.6.0' });
+  res.json({ status: 'ok', version: '0.7.0' });
 });
 
 // auth
@@ -331,7 +335,7 @@ app.post('/api/breaks/stop', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
-/* --------- NEW: Employees CRUD (minimal) --------- */
+/* --------- Employees (minimal) --------- */
 
 app.get('/api/employees', auth, async (_req, res) => {
   try { res.json(await all(`SELECT * FROM employees ORDER BY id ASC`)); }
@@ -383,6 +387,93 @@ app.put('/api/employees/:id', auth, async (req, res) => {
     const r = await run(`UPDATE employees SET ${fields.join(', ')} WHERE id = ?`, vals);
     res.json({ success: true, changes: r.changes });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+/* --------- NEW: Live status + Reports --------- */
+
+// who is currently on a break (optionally filter by team_id/department_id)
+app.get('/api/status/live', auth, async (req, res) => {
+  try {
+    const { team_id, department_id } = req.query || {};
+    const where = ['b.end_time IS NULL'];
+    const params = [];
+    if (team_id) { where.push('e.team_id = ?'); params.push(parseInt(team_id, 10)); }
+    if (department_id) { where.push('e.department_id = ?'); params.push(parseInt(department_id, 10)); }
+
+    const rows = await all(
+      `
+      SELECT 
+        b.id as break_id, b.start_time,
+        e.id as employee_id, e.name as employee_name,
+        t.name as team_name, d.name as department_name,
+        bt.name as break_type
+      FROM breaks b
+      JOIN employees e ON e.id = b.employee_id
+      LEFT JOIN teams t ON t.id = e.team_id
+      LEFT JOIN departments d ON d.id = e.department_id
+      LEFT JOIN break_types bt ON bt.id = b.break_type_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY b.start_time ASC
+      `,
+      params
+    );
+
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// aggregated minutes by employee/team/break_type
+app.get('/api/reports/usage', auth, async (req, res) => {
+  try {
+    const { from, to, group } = req.query || {};
+    const fromIso = parseIso(from);
+    const toIso = parseIso(to);
+    const where = ['b.end_time IS NOT NULL']; // only completed breaks are counted
+    const params = [];
+    if (fromIso) { where.push('b.start_time >= ?'); params.push(fromIso); }
+    if (toIso)   { where.push('b.start_time <= ?'); params.push(toIso); }
+
+    let select, groupBy, labelField;
+
+    switch ((group || 'employee').toLowerCase()) {
+      case 'team':
+        select = `t.id as team_id, t.name as team_name`;
+        groupBy = `t.id, t.name`;
+        labelField = 'team_name';
+        break;
+      case 'break_type':
+        select = `bt.id as break_type_id, bt.name as break_type_name`;
+        groupBy = `bt.id, bt.name`;
+        labelField = 'break_type_name';
+        break;
+      default: // employee
+        select = `e.id as employee_id, e.name as employee_name`;
+        groupBy = `e.id, e.name`;
+        labelField = 'employee_name';
+        break;
+    }
+
+    const rows = await all(
+      `
+      SELECT ${select}, COALESCE(SUM(COALESCE(b.duration,0)),0) as total_minutes, COUNT(*) as breaks_count
+      FROM breaks b
+      JOIN employees e ON e.id = b.employee_id
+      LEFT JOIN teams t ON t.id = e.team_id
+      LEFT JOIN break_types bt ON bt.id = b.break_type_id
+      WHERE ${where.join(' AND ')}
+      GROUP BY ${groupBy}
+      ORDER BY total_minutes DESC, ${labelField} ASC
+      `,
+      params
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // ---------- start ----------
