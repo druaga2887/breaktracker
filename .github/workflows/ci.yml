@@ -183,13 +183,25 @@ jobs:
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
             "http://localhost:3001/api/reports/usage?group=employee" | tee rep.json
           node -e "const a=JSON.parse(require('fs').readFileSync('rep.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee missing from report');"
+
       - name: Debug frontend tree
         working-directory: frontend
         run: |
+          set -xe
           pwd
+          echo "== top =="
           ls -la
-          echo '--- src ---'
-          ls -la src
+          echo "== src (print with control chars) =="
+          ls -la src | sed -n '1,200p' | cat -v
+          echo "== find files under src =="
+          find src -maxdepth 1 -type f -printf '%p\n' || true
+          echo "== stat App.jsx =="
+          stat src/App.jsx || true
+          echo "== show main.jsx =="
+          sed -n '1,120p' src/main.jsx || true
+          echo "== show App.jsx =="
+          sed -n '1,120p' src/App.jsx || true
+
 
       - name: Build frontend
         working-directory: frontend
