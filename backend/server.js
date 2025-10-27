@@ -1,3 +1,4 @@
+// (same imports & setup as before)
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -157,7 +158,7 @@ function parseIso(s) {
 
 // ---------- routes ----------
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '0.7.0' });
+  res.json({ status: 'ok', version: '0.8.0' });
 });
 
 // auth
@@ -249,7 +250,7 @@ app.post('/api/departments', auth, async (req, res) => {
   }
 });
 
-// teams (auto-pick first department if not provided)
+// teams
 app.post('/api/teams', auth, async (req, res) => {
   const { name, description, color } = req.body || {};
   let { department_id } = req.body || {};
@@ -277,6 +278,12 @@ app.post('/api/teams', auth, async (req, res) => {
 });
 
 /* --------- Break Types + Breaks --------- */
+
+// NEW: list break types
+app.get('/api/break-types', auth, async (_req, res) => {
+  try { res.json(await all(`SELECT * FROM break_types WHERE status='Active' ORDER BY id ASC`)); }
+  catch { res.status(500).json({ error: 'Database error' }); }
+});
 
 app.post('/api/break-types', auth, async (req, res) => {
   const { name, color } = req.body || {};
@@ -389,9 +396,8 @@ app.put('/api/employees/:id', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-/* --------- NEW: Live status + Reports --------- */
+/* --------- Live status + Reports --------- */
 
-// who is currently on a break (optionally filter by team_id/department_id)
 app.get('/api/status/live', auth, async (req, res) => {
   try {
     const { team_id, department_id } = req.query || {};
@@ -425,19 +431,17 @@ app.get('/api/status/live', auth, async (req, res) => {
   }
 });
 
-// aggregated minutes by employee/team/break_type
 app.get('/api/reports/usage', auth, async (req, res) => {
   try {
     const { from, to, group } = req.query || {};
     const fromIso = parseIso(from);
     const toIso = parseIso(to);
-    const where = ['b.end_time IS NOT NULL']; // only completed breaks are counted
+    const where = ['b.end_time IS NOT NULL'];
     const params = [];
     if (fromIso) { where.push('b.start_time >= ?'); params.push(fromIso); }
     if (toIso)   { where.push('b.start_time <= ?'); params.push(toIso); }
 
     let select, groupBy, labelField;
-
     switch ((group || 'employee').toLowerCase()) {
       case 'team':
         select = `t.id as team_id, t.name as team_name`;
@@ -449,7 +453,7 @@ app.get('/api/reports/usage', auth, async (req, res) => {
         groupBy = `bt.id, bt.name`;
         labelField = 'break_type_name';
         break;
-      default: // employee
+      default:
         select = `e.id as employee_id, e.name as employee_name`;
         groupBy = `e.id, e.name`;
         labelField = 'employee_name';
