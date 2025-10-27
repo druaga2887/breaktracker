@@ -479,7 +479,25 @@ app.get('/api/reports/usage', auth, async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   }
 });
+// --- Serve frontend build (keep this BELOW /api routes) ---
+import path from 'path';
+import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Point to the Vite build output (../frontend/dist)
+const distPath = path.resolve(__dirname, '../frontend/dist');
+
+// Only enable if the folder exists (so dev API keeps working without a build)
+import fs from 'fs';
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  // Fallback to index.html for client-side routing, but never for /api/*
+  app.get(/^(?!\/api\/).*/, (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 // ---------- start ----------
 init().then(() => {
   app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
