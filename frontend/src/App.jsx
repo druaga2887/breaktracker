@@ -1,3 +1,4 @@
+// frontend/src/App.jsx
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
 
@@ -31,12 +32,10 @@ export default function App() {
   }, [token]);
 
   const onLogin = async (e) => {
-    e.preventDefault();
-    setMsg('');
+    e.preventDefault(); setMsg('');
     try {
       const r = await api('/api/auth/login', { method: 'POST', body: user });
-      setToken(r.token);
-      localStorage.setItem('bt_token', r.token);
+      setToken(r.token); localStorage.setItem('bt_token', r.token);
     } catch (e) { setMsg(String(e.message || e)); }
   };
 
@@ -45,8 +44,7 @@ export default function App() {
     try {
       if (!selectedBt) throw new Error('No break types. Ask an admin to create one.');
       await api('/api/breaks/start', { method: 'POST', token, body: { break_type_id: selectedBt } });
-      const rows = await api('/api/status/live', { token });
-      setLive(rows);
+      const rows = await api('/api/status/live', { token }); setLive(rows);
     } catch (e) { setMsg(String(e.message || e)); }
   };
 
@@ -54,15 +52,11 @@ export default function App() {
     setMsg('');
     try {
       await api('/api/breaks/stop', { method: 'POST', token, body: {} });
-      const rows = await api('/api/status/live', { token });
-      setLive(rows);
+      const rows = await api('/api/status/live', { token }); setLive(rows);
     } catch (e) { setMsg(String(e.message || e)); }
   };
 
-  const logout = () => {
-    setToken('');
-    localStorage.removeItem('bt_token');
-  };
+  const logout = () => { setToken(''); localStorage.removeItem('bt_token'); };
 
   return (
     <div className="card">
