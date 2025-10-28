@@ -501,6 +501,9 @@ process.on('uncaughtException', err => { console.error('uncaughtException:', err
 app.get('/api/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString(), version: process.env.APP_VERSION || 'dev' });
 });
+// Mount the built UI (served from backend/public)
+const mountStaticUI = require('./serveStaticUI');
+mountStaticUI(app);
 
 /**
  * Serve the built UI from ./public (populated by CI)
