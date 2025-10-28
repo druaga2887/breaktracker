@@ -1,4 +1,4 @@
-// (same imports & setup as before)
+// backend/server.js  (CommonJS)
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -6,6 +6,7 @@ const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const fs = require('fs');
 
 const app = express();
 app.set('trust proxy', true);
@@ -16,9 +17,15 @@ app.use(morgan('tiny'));
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 
-// ---------- SQLite helpers ----------
+// ---------- SQLite setup ----------
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(DB_PATH);
+
+// PRAGMAs for durability & referential integrity
+db.serialize(() => {
+  db.run('PRAGMA journal_mode = WAL');
+  db.run('PRAGMA foreign_keys = ON');
+});
 
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -37,14 +44,6 @@ function all(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
-}
-
-// ---------- bootstrap schema & seed ----------
-async function ensureColumn(table, col, defSql) {
-  const cols = await all(`PRAGMA table_info(${table})`);
-  if (!cols.find(c => c.name === col)) {
-    await run(`ALTER TABLE ${table} ADD COLUMN ${col} ${defSql}`);
-  }
 }
 
 async function init() {
@@ -100,7 +99,9 @@ async function init() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       department_id INTEGER,
       team_id INTEGER,
-      FOREIGN KEY (user_id) REFERENCES users(id)
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (department_id) REFERENCES departments(id),
+      FOREIGN KEY (team_id) REFERENCES teams(id)
     )
   `);
 
@@ -117,7 +118,7 @@ async function init() {
     )
   `);
 
-  // seed admin + an employee row for tests
+  // Seed admin user and employee record
   let admin = await get(`SELECT * FROM users WHERE username = 'admin'`);
   if (!admin) {
     const hashed = bcrypt.hashSync('admin123', 10);
@@ -149,7 +150,6 @@ function auth(req, res, next) {
     res.status(401).json({ error: 'Unauthorized' });
   }
 }
-
 function parseIso(s) {
   if (!s) return null;
   const d = new Date(s);
@@ -157,8 +157,13 @@ function parseIso(s) {
 }
 
 // ---------- routes ----------
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', version: '0.8.0' });
+app.get('/api/health', async (_req, res) => {
+  try {
+    const row = await get('SELECT 1 AS ok');
+    res.json({ status: 'ok', version: '0.9.0', db: row?.ok === 1 ? 'ok' : 'unknown' });
+  } catch (e) {
+    res.status(500).json({ status: 'error', db: 'down' });
+  }
 });
 
 // auth
@@ -277,14 +282,11 @@ app.post('/api/teams', auth, async (req, res) => {
   }
 });
 
-/* --------- Break Types + Breaks --------- */
-
-// NEW: list break types
+// break types
 app.get('/api/break-types', auth, async (_req, res) => {
   try { res.json(await all(`SELECT * FROM break_types WHERE status='Active' ORDER BY id ASC`)); }
   catch { res.status(500).json({ error: 'Database error' }); }
 });
-
 app.post('/api/break-types', auth, async (req, res) => {
   const { name, color } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
@@ -300,6 +302,7 @@ app.post('/api/break-types', auth, async (req, res) => {
   }
 });
 
+// breaks
 app.post('/api/breaks/start', auth, async (req, res) => {
   const { break_type_id } = req.body || {};
   if (!break_type_id) return res.status(400).json({ error: 'break_type_id is required' });
@@ -342,13 +345,11 @@ app.post('/api/breaks/stop', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
-/* --------- Employees (minimal) --------- */
-
+// employees
 app.get('/api/employees', auth, async (_req, res) => {
   try { res.json(await all(`SELECT * FROM employees ORDER BY id ASC`)); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
-
 app.post('/api/employees', auth, async (req, res) => {
   try {
     const { user_id, name, department_id, team_id, status } = req.body || {};
@@ -378,7 +379,6 @@ app.post('/api/employees', auth, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
-
 app.put('/api/employees/:id', auth, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -396,8 +396,7 @@ app.put('/api/employees/:id', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-/* --------- Live status + Reports --------- */
-
+// live status + reports
 app.get('/api/status/live', auth, async (req, res) => {
   try {
     const { team_id, department_id } = req.query || {};
@@ -479,26 +478,21 @@ app.get('/api/reports/usage', auth, async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   }
 });
-// --- Serve frontend build (keep this BELOW /api routes) ---
-import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Point to the Vite build output (../frontend/dist)
+// ---------- serve frontend build if present (AFTER /api/*) ----------
 const distPath = path.resolve(__dirname, '../frontend/dist');
-
-// Only enable if the folder exists (so dev API keeps working without a build)
-import fs from 'fs';
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
-  // Fallback to index.html for client-side routing, but never for /api/*
-  app.get(/^(?!\/api\/).*/, (req, res) => {
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'));
   });
 }
+
+// ---------- crash visibility ----------
+process.on('unhandledRejection', err => { console.error('unhandledRejection:', err); process.exit(1); });
+process.on('uncaughtException', err => { console.error('uncaughtException:', err); process.exit(1); });
+
 // ---------- start ----------
 init().then(() => {
-  app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => console.log(`Backend running on http://localhost:${PORT}`));
 });
