@@ -492,6 +492,35 @@ if (fs.existsSync(distPath)) {
 process.on('unhandledRejection', err => { console.error('unhandledRejection:', err); process.exit(1); });
 process.on('uncaughtException', err => { console.error('uncaughtException:', err); process.exit(1); });
 
+// --- Add near the top if you don't already have these ---
+const path = require('path');
+const fs = require('fs');
+// --------------------------------------------------------
+
+/**
+ * Minimal health endpoint (keep if you already have one)
+ */
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'healthy', timestamp: new Date().toISOString(), version: process.env.APP_VERSION || 'dev' });
+});
+
+/**
+ * Serve the built UI from ./public (populated by CI)
+ * - copies of frontend/dist are placed here by the workflow
+ * - non-/api routes fall back to index.html (SPA)
+ */
+const publicDir = path.resolve(__dirname, 'public');
+if (fs.existsSync(publicDir)) {
+  app.use(express.static(publicDir, { index: 'index.html', maxAge: '15m' }));
+
+  // Any non-API route → SPA index.html
+  app.get(/^\/(?!api).*/, (_req, res) => {
+    res.sendFile(path.join(publicDir, 'index.html'));
+  });
+} else {
+  console.warn('Static UI directory not found:', publicDir);
+}
+
 // ---------- start ----------
 init().then(() => {
   app.listen(PORT, '0.0.0.0', () => console.log(`Backend running on http://localhost:${PORT}`));
