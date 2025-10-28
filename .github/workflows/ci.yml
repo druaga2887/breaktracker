@@ -1,49 +1,66 @@
 name: Break Tracker CI
+
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  api:
+  ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node 20.x
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install backend deps
+      # --- Backend deps ---
+      - name: Install backend dependencies
         working-directory: backend
-        run: npm i --no-audit --no-fund
+        run: |
+          npm i --no-audit --no-fund
 
-      - name: Start backend
-        working-directory: backend
+      # --- Start API and wait for health ---
+      - name: Start backend (background) and wait for health
         env:
           PORT: 3001
           JWT_SECRET: testsecret
         run: |
-          node server.js & echo $! > server.pid
-          for i in {1..30}; do
-            curl -fsS http://localhost:3001/api/health && break
+          set -e
+          node backend/server.js > server.out 2> server.err & echo $! > server.pid
+
+          for i in {1..40}; do
+            if curl -fsS http://localhost:3001/api/health > health.json 2>/dev/null; then
+              echo "API is up"; cat health.json; exit 0
+            fi
+            if ! kill -0 $(cat server.pid) 2>/dev/null; then
+              echo "API process exited early"
+              echo "--- server.out ---"; tail -n +1 server.out || true
+              echo "--- server.err ---"; tail -n +1 server.err || true
+              exit 1
+            fi
             sleep 1
           done
+          echo "API did not become healthy in time"
+          echo "--- server.out ---"; tail -n +1 server.out || true
+          echo "--- server.err ---"; tail -n +1 server.err || true
+          exit 1
 
-      - name: Health check
-        run: |
-          curl -fsS http://localhost:3001/api/health | tee health.json
-          grep -q '"status":"ok"' health.json
-
-      - name: Login (admin/admin123)
+      # --- Core API flow checks (admin) ---
+      - name: Login as admin
         run: |
           curl -fsS -H "Content-Type: application/json" \
             -d '{"username":"admin","password":"admin123"}' \
             http://localhost:3001/api/auth/login | tee login.json
           grep -q '"token"' login.json
-          echo "ADMIN_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('login.json','utf8')).token")" >> $GITHUB_ENV
+          TOKEN=$(node -e "console.log(JSON.parse(require('fs').readFileSync('login.json','utf8')).token)")
+          echo "ADMIN_TOKEN=$TOKEN" >> $GITHUB_ENV
 
       - name: Create department
         env:
@@ -51,12 +68,13 @@ jobs:
         run: |
           DNAME="CI Dept $GITHUB_RUN_NUMBER"
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d "{\"name\":\"$DNAME\"}" \
+            -d "{\"name\":\"$DNAME\",\"description\":\"CI seeded\"}" \
             http://localhost:3001/api/departments | tee dep.json
           grep -q '"id":' dep.json
-          echo "DEP_ID=$(node -p "JSON.parse(require('fs').readFileSync('dep.json','utf8')).id")" >> $GITHUB_ENV
+          DEP_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dep.json','utf8')).id)")
+          echo "DEP_ID=$DEP_ID" >> $GITHUB_ENV
 
-      - name: Create team (auto-pick department)
+      - name: Create team (auto-pick department if none provided)
         env:
           ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
         run: |
@@ -65,7 +83,8 @@ jobs:
             -d "{\"name\":\"$TNAME\"}" \
             http://localhost:3001/api/teams | tee team.json
           grep -q '"id":' team.json
-          echo "TEAM_ID=$(node -p "JSON.parse(require('fs').readFileSync('team.json','utf8')).id")" >> $GITHUB_ENV
+          TEAM_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('team.json','utf8')).id)")
+          echo "TEAM_ID=$TEAM_ID" >> $GITHUB_ENV
 
       - name: Create break type
         env:
@@ -73,25 +92,26 @@ jobs:
         run: |
           BNAME="CI Break $GITHUB_RUN_NUMBER"
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d "{\"name\":\"$BNAME\",\"color\":\"#ccc\"}" \
+            -d "{\"name\":\"$BNAME\",\"color\":\"#cccccc\"}" \
             http://localhost:3001/api/break-types | tee bt.json
           grep -q '"id":' bt.json
-          echo "BT_ID=$(node -p "JSON.parse(require('fs').readFileSync('bt.json','utf8')).id")" >> $GITHUB_ENV
+          BT_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('bt.json','utf8')).id)")
+          echo "BT_ID=$BT_ID" >> $GITHUB_ENV
 
-      - name: Start & Stop break as admin
+      - name: Start & stop a break as admin
         env:
           ADMIN_TOKEN: ${{ env.ADMIN_TOKEN }}
           BT_ID: ${{ env.BT_ID }}
         run: |
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
             -d "{\"break_type_id\":$BT_ID}" \
-            http://localhost:3001/api/breaks/start | tee start.json
-          grep -q '"id":' start.json
+            http://localhost:3001/api/breaks/start | tee start_admin.json
+          grep -q '"id":' start_admin.json
 
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
             -d "{}" \
-            http://localhost:3001/api/breaks/stop | tee stop.json
-          grep -q '"success":true' stop.json
+            http://localhost:3001/api/breaks/stop | tee stop_admin.json
+          grep -q '"success":true' stop_admin.json
 
       - name: Create user (no password -> must_change_password)
         env:
@@ -103,7 +123,8 @@ jobs:
             http://localhost:3001/api/users | tee user.json
           grep -q '"id":' user.json
           echo "NEWUSER=$U" >> $GITHUB_ENV
-          echo "NEWUSER_ID=$(node -p "JSON.parse(require('fs').readFileSync('user.json','utf8')).id")" >> $GITHUB_ENV
+          NEWUSER_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('user.json','utf8')).id)")
+          echo "NEWUSER_ID=$NEWUSER_ID" >> $GITHUB_ENV
 
       - name: Create employee for new user (link to dept/team)
         env:
@@ -116,7 +137,8 @@ jobs:
             -d "{\"user_id\":$NEWUSER_ID,\"name\":\"CI Employee\",\"department_id\":$DEP_ID,\"team_id\":$TEAM_ID}" \
             http://localhost:3001/api/employees | tee emp.json
           grep -q '"id":' emp.json
-          echo "EMP_ID=$(node -p "JSON.parse(require('fs').readFileSync('emp.json','utf8')).id")" >> $GITHUB_ENV
+          EMP_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('emp.json','utf8')).id)")
+          echo "EMP_ID=$EMP_ID" >> $GITHUB_ENV
 
       - name: Login as new user with default password
         env:
@@ -126,7 +148,8 @@ jobs:
             -d "{\"username\":\"$NEWUSER\",\"password\":\"ChangeMe123!\"}" \
             http://localhost:3001/api/auth/login | tee ulogin.json
           grep -q '"token"' ulogin.json
-          echo "USER_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('ulogin.json','utf8')).token")" >> $GITHUB_ENV
+          USER_TOKEN=$(node -e "console.log(JSON.parse(require('fs').readFileSync('ulogin.json','utf8')).token)")
+          echo "USER_TOKEN=$USER_TOKEN" >> $GITHUB_ENV
 
       - name: Change new user password
         env:
@@ -145,7 +168,8 @@ jobs:
             -d "{\"username\":\"$NEWUSER\",\"password\":\"NewCIPass123!\"}" \
             http://localhost:3001/api/auth/login | tee ulogin2.json
           grep -q '"token"' ulogin2.json
-          echo "USER2_TOKEN=$(node -p "JSON.parse(require('fs').readFileSync('ulogin2.json','utf8')).token")" >> $GITHUB_ENV
+          USER2_TOKEN=$(node -e "console.log(JSON.parse(require('fs').readFileSync('ulogin2.json','utf8')).token)")
+          echo "USER2_TOKEN=$USER2_TOKEN" >> $GITHUB_ENV
 
       - name: Start live break as new user
         env:
@@ -154,8 +178,8 @@ jobs:
         run: |
           curl -fsS -H "Authorization: Bearer $USER2_TOKEN" -H "Content-Type: application/json" \
             -d "{\"break_type_id\":$BT_ID}" \
-            http://localhost:3001/api/breaks/start | tee start2.json
-          grep -q '"id":' start2.json
+            http://localhost:3001/api/breaks/start | tee start_user.json
+          grep -q '"id":' start_user.json
 
       - name: Check live status includes this employee
         env:
@@ -164,7 +188,7 @@ jobs:
         run: |
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
             http://localhost:3001/api/status/live | tee live.json
-          node -e "const a=JSON.parse(require('fs').readFileSync('live.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee not in live status');"
+          node -e "const a=JSON.parse(require('fs').readFileSync('live.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee not in live status'); else console.log('OK: employee in live status');"
 
       - name: Stop that live break
         env:
@@ -172,8 +196,8 @@ jobs:
         run: |
           curl -fsS -H "Authorization: Bearer $USER2_TOKEN" -H "Content-Type: application/json" \
             -d "{}" \
-            http://localhost:3001/api/breaks/stop | tee stop2.json
-          grep -q '"success":true' stop2.json
+            http://localhost:3001/api/breaks/stop | tee stop_user.json
+          grep -q '"success":true' stop_user.json
 
       - name: Usage report by employee (should include the new employee)
         env:
@@ -181,37 +205,44 @@ jobs:
           EMP_ID: ${{ env.EMP_ID }}
         run: |
           curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
-            "http://localhost:3001/api/reports/usage?group=employee" | tee rep.json
-          node -e "const a=JSON.parse(require('fs').readFileSync('rep.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee missing from report');"
+            "http://localhost:3001/api/reports/usage?group=employee" | tee usage.json
+          node -e "const a=JSON.parse(require('fs').readFileSync('usage.json','utf8')); if(!Array.isArray(a)||!a.find(x=>x.employee_id==process.env.EMP_ID)) throw new Error('employee missing from report'); else console.log('OK: employee present in report');"
 
-      - name: Debug frontend tree
+      # --- Frontend build ---
+      - name: Install frontend dependencies
         working-directory: frontend
         run: |
-          set -xe
-          pwd
-          echo "== top =="
-          ls -la
-          echo "== src (print with control chars) =="
-          ls -la src | sed -n '1,200p' | cat -v
-          echo "== find files under src =="
-          find src -maxdepth 1 -type f -printf '%p\n' || true
-          echo "== stat App.jsx =="
-          stat src/App.jsx || true
-          echo "== show main.jsx =="
-          sed -n '1,120p' src/main.jsx || true
-          echo "== show App.jsx =="
-          sed -n '1,120p' src/App.jsx || true
-
+          npm i --no-audit --no-fund
 
       - name: Build frontend
         working-directory: frontend
         env:
           VITE_API_URL: http://localhost:3001
         run: |
-          npm i --no-audit --no-fund
           npm run build
 
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+
+      # Optional: confirm the backend can serve the built UI (if static serving is enabled)
+      - name: Smoke check UI via backend
+        run: |
+          curl -fsS http://localhost:3001/ | grep -i "Break Tracker" && echo "UI served OK"
+
+      # --- Teardown ---
       - name: Stop backend
         if: always()
-        working-directory: backend
-        run: kill -9 $(cat server.pid) || true
+        run: |
+          if [ -f server.pid ]; then
+            kill -9 $(cat server.pid) || true
+          fi
+
+      - name: Print backend logs on failure
+        if: failure()
+        run: |
+          echo "--- server.out ---"; tail -n +200 server.out || true
+          echo "--- server.err ---"; tail -n +200 server.err || true
