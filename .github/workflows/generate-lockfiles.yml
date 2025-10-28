@@ -12,48 +12,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show tree before
-        run: |
-          echo "== repo root =="
-          ls -la
-          echo "== backend =="
-          ls -la backend || true
-          echo "== frontend =="
-          ls -la frontend || true
-
-      - name: Verify package.json locations
-        run: |
-          test -f backend/package.json || (echo "MISSING backend/package.json" && exit 1)
-          test -f frontend/package.json || (echo "MISSING frontend/package.json" && exit 1)
-
-      - name: Setup Node 20
+      - name: Node 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
+      - name: Debug repo tree
+        run: |
+          echo "== ls -la =="
+          ls -la
+          echo "== ls backend =="
+          ls -la backend || true
+          echo "== ls frontend =="
+          ls -la frontend || true
+          echo "== show frontend/package.json (first 80 lines) =="
+          sed -n '1,80p' frontend/package.json || true
+
       - name: Create backend lockfile
         working-directory: backend
-        run: |
-          npm i --package-lock-only --no-audit --no-fund
-          ls -la package-lock.json
+        run: npm i --package-lock-only --no-audit --no-fund
 
       - name: Create frontend lockfile
         working-directory: frontend
-        run: |
-          npm i --package-lock-only --no-audit --no-fund
-          ls -la package-lock.json
+        run: npm i --package-lock-only --no-audit --no-fund
 
-      - name: Show tree after
+      - name: Verify lockfiles exist
         run: |
-          echo "== backend =="
-          ls -la backend
-          echo "== frontend =="
-          ls -la frontend
+          test -f backend/package-lock.json || (echo "MISSING backend/package-lock.json" && exit 1)
+          test -f frontend/package-lock.json || (echo "MISSING frontend/package-lock.json" && exit 1)
 
-      # Force-add in case .gitignore excludes package-lock.json
-      - name: Commit lockfiles (force add)
+      - name: Commit lockfiles
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f backend/package-lock.json frontend/package-lock.json
+          git add backend/package-lock.json frontend/package-lock.json
           git commit -m "chore(ci): add npm lockfiles" || echo "No changes to commit"
+          git push
