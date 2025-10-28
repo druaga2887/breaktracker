@@ -1,0 +1,54 @@
+name: Support bundle
+on:
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Collect repo & config info (safe)
+        run: |
+          mkdir -p _bundle
+          echo "== git status =="        >  _bundle/diag.txt
+          git status                    >> _bundle/diag.txt 2>&1 || true
+          echo "== tree (top) =="       >> _bundle/diag.txt
+          ls -la                        >> _bundle/diag.txt 2>&1
+          echo "== backend/ ==""        >> _bundle/diag.txt
+          ls -la backend                >> _bundle/diag.txt 2>&1
+          echo "== frontend/ ==""       >> _bundle/diag.txt
+          ls -la frontend               >> _bundle/diag.txt 2>&1
+          echo "== node/npm versions ==">> _bundle/diag.txt
+          node -v                       >> _bundle/diag.txt
+          npm -v                        >> _bundle/diag.txt
+          echo "== .npmrc (root) =="    >> _bundle/diag.txt
+          (cat .npmrc 2>/dev/null || echo "(none)") >> _bundle/diag.txt
+          echo "== .npmrc (frontend) ==">> _bundle/diag.txt
+          (cat frontend/.npmrc 2>/dev/null || echo "(none)") >> _bundle/diag.txt
+          echo "== .gitignore =="       >> _bundle/diag.txt
+          (sed -n '1,200p' .gitignore 2>/dev/null || echo "(none)") >> _bundle/diag.txt
+
+          # show key files (first 200 lines each)
+          for f in \
+            backend/server.js \
+            backend/package.json \
+            frontend/package.json \
+            frontend/vite.config.* \
+            frontend/src/main.jsx \
+            ; do
+            if [ -f "$f" ]; then
+              echo "==== $f (top) ====" >> _bundle/diag.txt
+              sed -n '1,200p' "$f"     >> _bundle/diag.txt
+            fi
+          done
+
+      - name: Upload support bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: support-bundle
+          path: _bundle/diag.txt
