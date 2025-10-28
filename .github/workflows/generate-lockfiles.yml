@@ -1,0 +1,23 @@
+name: Generate lockfiles (one-time)
+on: workflow_dispatch
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Create lockfiles
+        run: |
+          cd backend && npm i --package-lock-only --no-audit --no-fund && cd ..
+          cd frontend && npm i --package-lock-only --no-audit --no-fund && cd ..
+      - name: Commit lockfiles
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: add npm lockfiles"
+          file_pattern: |
+            backend/package-lock.json
+            frontend/package-lock.json
