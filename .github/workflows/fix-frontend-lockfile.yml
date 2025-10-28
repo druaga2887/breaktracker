@@ -1,0 +1,56 @@
+name: Fix frontend lockfile
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Diagnose tree & npm config
+        run: |
+          echo "== root =="
+          ls -la
+          echo "== backend =="
+          ls -la backend || true
+          echo "== frontend =="
+          ls -la frontend || true
+          echo "== show frontend/package.json (first 120 lines) =="
+          sed -n '1,120p' frontend/package.json || true
+          echo "== .npmrc (root) =="
+          (cat .npmrc 2>/dev/null || echo "(none)")
+          echo "== .npmrc (frontend) =="
+          (cat frontend/.npmrc 2>/dev/null || echo "(none)")
+          echo "== .gitignore (root) =="
+          (sed -n '1,120p' .gitignore 2>/dev/null || echo "(none)")
+
+      - name: Generate frontend lockfile (forced)
+        working-directory: frontend
+        env:
+          npm_config_fund: "false"
+          npm_config_audit: "false"
+          npm_config_package_lock: "true"
+        run: |
+          # force-enable lockfile even if .npmrc/pack file disables it
+          npm config set package-lock true
+          npm i --package-lock-only
+          test -f package-lock.json && echo "Lockfile created." || (echo "FAILED: no lockfile" && exit 1)
+
+      - name: Commit lockfile
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # force add in case .gitignore excludes lockfiles
+          git add -f frontend/package-lock.json
+          git commit -m "chore(ci): add frontend lockfile" || echo "No changes to commit"
+          git push
