@@ -5,7 +5,7 @@ const express = require('express');
 
 /**
  * Mounts the built React/Vite UI (copied by CI into backend/public).
- * Must be called AFTER your /api/* routes and BEFORE any 404/error handlers.
+ * Call AFTER your /api routes and BEFORE any 404/error handlers.
  */
 module.exports = function mountStaticUI(app) {
   const publicDir = path.resolve(__dirname, 'public');
