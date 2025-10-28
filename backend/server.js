@@ -492,9 +492,7 @@ if (fs.existsSync(distPath)) {
 process.on('unhandledRejection', err => { console.error('unhandledRejection:', err); process.exit(1); });
 process.on('uncaughtException', err => { console.error('uncaughtException:', err); process.exit(1); });
 
-// --- Add near the top if you don't already have these ---
-const path = require('path');
-const fs = require('fs');
+
 // --------------------------------------------------------
 
 /**
