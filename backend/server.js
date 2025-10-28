@@ -1,12 +1,13 @@
-// backend/server.js  (CommonJS)
+// backend/server.js  — single file, production-safe, serves /api + built UI
+
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const path = require('path');
+const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const fs = require('fs');
 
 const app = express();
 app.set('trust proxy', true);
@@ -14,14 +15,14 @@ app.use(express.json());
 app.use(cors());
 app.use(morgan('tiny'));
 
+// ---------- config ----------
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || '0.0.0.0';
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 
-// ---------- SQLite setup ----------
+// ---------- db ----------
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(DB_PATH);
-
-// PRAGMAs for durability & referential integrity
 db.serialize(() => {
   db.run('PRAGMA journal_mode = WAL');
   db.run('PRAGMA foreign_keys = ON');
@@ -56,7 +57,6 @@ async function init() {
       name TEXT DEFAULT ''
     )
   `);
-
   await run(`
     CREATE TABLE IF NOT EXISTS departments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +66,6 @@ async function init() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
-
   await run(`
     CREATE TABLE IF NOT EXISTS teams (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +78,6 @@ async function init() {
       FOREIGN KEY (department_id) REFERENCES departments(id)
     )
   `);
-
   await run(`
     CREATE TABLE IF NOT EXISTS break_types (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +87,6 @@ async function init() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
-
   await run(`
     CREATE TABLE IF NOT EXISTS employees (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,7 +101,6 @@ async function init() {
       FOREIGN KEY (team_id) REFERENCES teams(id)
     )
   `);
-
   await run(`
     CREATE TABLE IF NOT EXISTS breaks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +114,7 @@ async function init() {
     )
   `);
 
-  // Seed admin user and employee record
+  // seed admin
   let admin = await get(`SELECT * FROM users WHERE username = 'admin'`);
   if (!admin) {
     const hashed = bcrypt.hashSync('admin123', 10);
@@ -138,7 +134,7 @@ async function init() {
   }
 }
 
-// ---------- utils ----------
+// ---------- helpers ----------
 function auth(req, res, next) {
   try {
     const h = req.headers.authorization || '';
@@ -156,17 +152,17 @@ function parseIso(s) {
   return isNaN(d) ? null : d.toISOString();
 }
 
-// ---------- routes ----------
+// ---------- routes: health ----------
 app.get('/api/health', async (_req, res) => {
   try {
     const row = await get('SELECT 1 AS ok');
-    res.json({ status: 'ok', version: '0.9.0', db: row?.ok === 1 ? 'ok' : 'unknown' });
-  } catch (e) {
+    res.json({ status: 'ok', db: row?.ok === 1 ? 'ok' : 'unknown', version: '0.9.0' });
+  } catch {
     res.status(500).json({ status: 'error', db: 'down' });
   }
 });
 
-// auth
+// ---------- routes: auth ----------
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body || {};
@@ -193,7 +189,7 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// users
+// ---------- routes: users ----------
 app.post('/api/users', auth, async (req, res) => {
   try {
     const { username, password, name } = req.body || {};
@@ -213,7 +209,6 @@ app.post('/api/users', auth, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
-
 app.put('/api/users/:id', auth, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -234,12 +229,11 @@ app.put('/api/users/:id', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// departments
+// ---------- routes: departments ----------
 app.get('/api/departments', auth, async (_req, res) => {
   try { res.json(await all(`SELECT * FROM departments ORDER BY id ASC`)); }
   catch { res.status(500).json({ error: 'Database error' }); }
 });
-
 app.post('/api/departments', auth, async (req, res) => {
   const { name, description } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
@@ -255,7 +249,7 @@ app.post('/api/departments', auth, async (req, res) => {
   }
 });
 
-// teams
+// ---------- routes: teams ----------
 app.post('/api/teams', auth, async (req, res) => {
   const { name, description, color } = req.body || {};
   let { department_id } = req.body || {};
@@ -282,7 +276,7 @@ app.post('/api/teams', auth, async (req, res) => {
   }
 });
 
-// break types
+// ---------- routes: break types ----------
 app.get('/api/break-types', auth, async (_req, res) => {
   try { res.json(await all(`SELECT * FROM break_types WHERE status='Active' ORDER BY id ASC`)); }
   catch { res.status(500).json({ error: 'Database error' }); }
@@ -302,7 +296,7 @@ app.post('/api/break-types', auth, async (req, res) => {
   }
 });
 
-// breaks
+// ---------- routes: breaks ----------
 app.post('/api/breaks/start', auth, async (req, res) => {
   const { break_type_id } = req.body || {};
   if (!break_type_id) return res.status(400).json({ error: 'break_type_id is required' });
@@ -328,7 +322,7 @@ app.post('/api/breaks/start', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
-app.post('/api/breaks/stop', auth, async (req, res) => {
+app.post('/api/breaks/stop', auth, async (_req, res) => {
   try {
     const emp = await get(`SELECT id FROM employees WHERE user_id = ?`, [req.user.id]);
     if (!emp) return res.status(400).json({ error: 'No employee found' });
@@ -345,7 +339,7 @@ app.post('/api/breaks/stop', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
-// employees
+// ---------- routes: employees ----------
 app.get('/api/employees', auth, async (_req, res) => {
   try { res.json(await all(`SELECT * FROM employees ORDER BY id ASC`)); }
   catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
@@ -396,7 +390,7 @@ app.put('/api/employees/:id', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// live status + reports
+// ---------- routes: status + reports ----------
 app.get('/api/status/live', auth, async (req, res) => {
   try {
     const { team_id, department_id } = req.query || {};
@@ -422,12 +416,8 @@ app.get('/api/status/live', auth, async (req, res) => {
       `,
       params
     );
-
     res.json(rows);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Database error' });
-  }
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
 app.get('/api/reports/usage', auth, async (req, res) => {
@@ -473,48 +463,13 @@ app.get('/api/reports/usage', auth, async (req, res) => {
       params
     );
     res.json(rows);
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Database error' });
-  }
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
-// ---------- serve frontend build if present (AFTER /api/*) ----------
-const distPath = path.resolve(__dirname, '../frontend/dist');
-if (fs.existsSync(distPath)) {
-  app.use(express.static(distPath));
-  app.get(/^(?!\/api\/).*/, (_req, res) => {
-    res.sendFile(path.join(distPath, 'index.html'));
-  });
-}
-
-// ---------- crash visibility ----------
-process.on('unhandledRejection', err => { console.error('unhandledRejection:', err); process.exit(1); });
-process.on('uncaughtException', err => { console.error('uncaughtException:', err); process.exit(1); });
-
-
-// --------------------------------------------------------
-
-/**
- * Minimal health endpoint (keep if you already have one)
- */
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString(), version: process.env.APP_VERSION || 'dev' });
-});
-// Mount the built UI (served from backend/public)
-const mountStaticUI = require('./serveStaticUI');
-mountStaticUI(app);
-
-/**
- * Serve the built UI from ./public (populated by CI)
- * - copies of frontend/dist are placed here by the workflow
- * - non-/api routes fall back to index.html (SPA)
- */
+// ---------- serve built UI (AFTER /api routes, BEFORE 404) ----------
 const publicDir = path.resolve(__dirname, 'public');
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir, { index: 'index.html', maxAge: '15m' }));
-
-  // Any non-API route → SPA index.html
   app.get(/^\/(?!api).*/, (_req, res) => {
     res.sendFile(path.join(publicDir, 'index.html'));
   });
@@ -522,7 +477,11 @@ if (fs.existsSync(publicDir)) {
   console.warn('Static UI directory not found:', publicDir);
 }
 
+// ---------- crash visibility ----------
+process.on('unhandledRejection', err => { console.error('unhandledRejection:', err); process.exit(1); });
+process.on('uncaughtException', err => { console.error('uncaughtException:', err); process.exit(1); });
+
 // ---------- start ----------
 init().then(() => {
-  app.listen(PORT, '0.0.0.0', () => console.log(`Backend running on http://localhost:${PORT}`));
+  app.listen(PORT, HOST, () => console.log(`Backend running on http://${HOST}:${PORT}`));
 });
