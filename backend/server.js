@@ -1,26 +1,28 @@
-// backend/server.js  — single file, production-safe, serves /api + built UI
+// backend/server.js  (ESM)
+import express from 'express';
+import cors from 'cors';
+import morgan from 'morgan';
+import path from 'path';
+import fs from 'fs';
+import sqlite3pkg from 'sqlite3';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { fileURLToPath } from 'url';
 
-const express = require('express');
-const cors = require('cors');
-const morgan = require('morgan');
-const path = require('path');
-const fs = require('fs');
-const sqlite3 = require('sqlite3').verbose();
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
+const sqlite3 = sqlite3pkg.verbose();
 const app = express();
 app.set('trust proxy', true);
 app.use(express.json());
 app.use(cors());
 app.use(morgan('tiny'));
 
-// ---------- config ----------
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 
-// ---------- db ----------
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(DB_PATH);
 db.serialize(() => {
@@ -28,267 +30,110 @@ db.serialize(() => {
   db.run('PRAGMA foreign_keys = ON');
 });
 
-function run(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function (err) {
-      if (err) return reject(err);
-      resolve(this);
-    });
-  });
-}
-function get(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-  });
-}
-function all(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
-  });
-}
+function run(sql, params = []) { return new Promise((resolve, reject) => {
+  db.run(sql, params, function (err) { if (err) reject(err); else resolve(this); });
+});}
+function get(sql, params = []) { return new Promise((resolve, reject) => {
+  db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
+});}
+function all(sql, params = []) { return new Promise((resolve, reject) => {
+  db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
+});}
 
 async function init() {
-  await run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      must_change_password INTEGER DEFAULT 1,
-      name TEXT DEFAULT ''
-    )
-  `);
-  await run(`
-    CREATE TABLE IF NOT EXISTS departments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      description TEXT DEFAULT '',
-      status TEXT DEFAULT 'Active',
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await run(`
-    CREATE TABLE IF NOT EXISTS teams (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      description TEXT DEFAULT '',
-      color TEXT DEFAULT '',
-      department_id INTEGER,
-      status TEXT DEFAULT 'Active',
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (department_id) REFERENCES departments(id)
-    )
-  `);
-  await run(`
-    CREATE TABLE IF NOT EXISTS break_types (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      color TEXT DEFAULT '',
-      status TEXT DEFAULT 'Active',
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await run(`
-    CREATE TABLE IF NOT EXISTS employees (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER UNIQUE,
-      name TEXT NOT NULL,
-      status TEXT DEFAULT 'Active',
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      department_id INTEGER,
-      team_id INTEGER,
-      FOREIGN KEY (user_id) REFERENCES users(id),
-      FOREIGN KEY (department_id) REFERENCES departments(id),
-      FOREIGN KEY (team_id) REFERENCES teams(id)
-    )
-  `);
-  await run(`
-    CREATE TABLE IF NOT EXISTS breaks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      employee_id INTEGER NOT NULL,
-      break_type_id INTEGER NOT NULL,
-      start_time TEXT NOT NULL,
-      end_time TEXT,
-      duration INTEGER,
-      FOREIGN KEY (employee_id) REFERENCES employees(id),
-      FOREIGN KEY (break_type_id) REFERENCES break_types(id)
-    )
-  `);
+  await run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, must_change_password INTEGER DEFAULT 1, name TEXT DEFAULT '')`);
+  await run(`CREATE TABLE IF NOT EXISTS departments (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, description TEXT DEFAULT '', status TEXT DEFAULT 'Active', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  await run(`CREATE TABLE IF NOT EXISTS teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, description TEXT DEFAULT '', color TEXT DEFAULT '', department_id INTEGER, status TEXT DEFAULT 'Active', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (department_id) REFERENCES departments(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS break_types (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, color TEXT DEFAULT '', status TEXT DEFAULT 'Active', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  await run(`CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER UNIQUE, name TEXT NOT NULL, status TEXT DEFAULT 'Active', created_at TEXT DEFAULT CURRENT_TIMESTAMP, department_id INTEGER, team_id INTEGER, FOREIGN KEY (user_id) REFERENCES users(id), FOREIGN KEY (department_id) REFERENCES departments(id), FOREIGN KEY (team_id) REFERENCES teams(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS breaks (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, break_type_id INTEGER NOT NULL, start_time TEXT NOT NULL, end_time TEXT, duration INTEGER, FOREIGN KEY (employee_id) REFERENCES employees(id), FOREIGN KEY (break_type_id) REFERENCES break_types(id))`);
 
-  // seed admin
   let admin = await get(`SELECT * FROM users WHERE username = 'admin'`);
   if (!admin) {
     const hashed = bcrypt.hashSync('admin123', 10);
-    await run(
-      `INSERT INTO users (username, password, must_change_password, name) VALUES (?,?,1,?)`,
-      ['admin', hashed, 'Admin']
-    );
+    await run(`INSERT INTO users (username, password, must_change_password, name) VALUES (?,?,1,?)`, ['admin', hashed, 'Admin']);
     admin = await get(`SELECT * FROM users WHERE username = 'admin'`);
     console.log('Seeded admin / admin123');
   }
   const emp = await get(`SELECT id FROM employees WHERE user_id = ?`, [admin.id]);
-  if (!emp) {
-    await run(`INSERT INTO employees (user_id, name, status) VALUES (?, ?, 'Active')`, [
-      admin.id,
-      'Admin',
-    ]);
-  }
+  if (!emp) await run(`INSERT INTO employees (user_id, name, status) VALUES (?, ?, 'Active')`, [admin.id, 'Admin']);
 }
 
-// ---------- helpers ----------
 function auth(req, res, next) {
   try {
     const h = req.headers.authorization || '';
     const t = h.startsWith('Bearer ') ? h.slice(7) : '';
     const payload = jwt.verify(t, JWT_SECRET);
-    req.user = payload;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Unauthorized' });
-  }
+    req.user = payload; next();
+  } catch { res.status(401).json({ error: 'Unauthorized' }); }
 }
-function parseIso(s) {
-  if (!s) return null;
-  const d = new Date(s);
-  return isNaN(d) ? null : d.toISOString();
-}
+function parseIso(s) { if (!s) return null; const d = new Date(s); return isNaN(d) ? null : d.toISOString(); }
 
-// ---------- routes: health ----------
 app.get('/api/health', async (_req, res) => {
-  try {
-    const row = await get('SELECT 1 AS ok');
-    res.json({ status: 'ok', db: row?.ok === 1 ? 'ok' : 'unknown', version: '0.9.0' });
-  } catch {
-    res.status(500).json({ status: 'error', db: 'down' });
-  }
+  try { const row = await get('SELECT 1 ok'); res.json({ status:'ok', db: row?.ok===1?'ok':'unknown', version:'0.9.0' }); }
+  catch { res.status(500).json({ status:'error', db:'down' }); }
 });
 
-// ---------- routes: auth ----------
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, password } = req.body || {};
     if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
     const user = await get(`SELECT * FROM users WHERE username = ?`, [username]);
-    if (!user || !bcrypt.compareSync(password, user.password))
-      return res.status(401).json({ error: 'Invalid credentials' });
+    if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Invalid credentials' });
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '8h' });
     res.json({ token, must_change_password: !!user.must_change_password });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
-
 app.post('/api/auth/change-password', auth, async (req, res) => {
   try {
     const { current_password, new_password } = req.body || {};
-    if (!current_password || !new_password || new_password.length < 8)
-      return res.status(400).json({ error: 'Invalid payload' });
+    if (!current_password || !new_password || new_password.length < 8) return res.status(400).json({ error: 'Invalid payload' });
     const user = await get(`SELECT * FROM users WHERE id = ?`, [req.user.id]);
-    if (!user || !bcrypt.compareSync(current_password, user.password))
-      return res.status(400).json({ error: 'Current password incorrect' });
+    if (!user || !bcrypt.compareSync(current_password, user.password)) return res.status(400).json({ error: 'Current password incorrect' });
     const hashed = bcrypt.hashSync(new_password, 10);
     await run(`UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?`, [hashed, req.user.id]);
     res.json({ success: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// ---------- routes: users ----------
-app.post('/api/users', auth, async (req, res) => {
-  try {
-    const { username, password, name } = req.body || {};
-    if (!username || !username.trim()) return res.status(400).json({ error: 'username required' });
-    const useDefault = !password || !password.length;
-    const effective = useDefault ? 'ChangeMe123!' : String(password);
-    const hashed = bcrypt.hashSync(effective, 10);
-    const must = useDefault ? 1 : 0;
-    const r = await run(
-      `INSERT INTO users (username, password, must_change_password, name) VALUES (?, ?, ?, ?)`,
-      [username.trim(), hashed, must, String(name || '')]
-    );
-    res.status(201).json({ id: r.lastID, username: username.trim(), must_change_password: !!must });
-  } catch (e) {
-    if (String(e).includes('UNIQUE')) return res.status(409).json({ error: 'username exists' });
-    console.error(e);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-app.put('/api/users/:id', auth, async (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const { name, new_password, must_change_password } = req.body || {};
-    const fields = [], vals = [];
-    if (name !== undefined) { fields.push('name = ?'); vals.push(String(name || '')); }
-    if (new_password) {
-      fields.push('password = ?'); vals.push(bcrypt.hashSync(String(new_password), 10));
-      if (typeof must_change_password === 'undefined') { fields.push('must_change_password = 1'); }
-    }
-    if (typeof must_change_password !== 'undefined') {
-      fields.push('must_change_password = ?'); vals.push(must_change_password ? 1 : 0);
-    }
-    if (!fields.length) return res.status(400).json({ error: 'nothing to update' });
-    vals.push(id);
-    const r = await run(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, vals);
-    res.json({ success: true, changes: r.changes });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
-});
-
-// ---------- routes: departments ----------
-app.get('/api/departments', auth, async (_req, res) => {
-  try { res.json(await all(`SELECT * FROM departments ORDER BY id ASC`)); }
-  catch { res.status(500).json({ error: 'Database error' }); }
-});
+app.get('/api/departments', auth, async (_req, res) => { try { res.json(await all(`SELECT * FROM departments ORDER BY id ASC`)); } catch { res.status(500).json({ error: 'Database error' }); }});
 app.post('/api/departments', auth, async (req, res) => {
   const { name, description } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
   try {
-    const r = await run(
-      `INSERT INTO departments (name, description, status) VALUES (?,?, 'Active')`,
-      [name.trim(), String(description || '')]
-    );
-    return res.status(201).json({ id: r.lastID, name: name.trim(), description: String(description || ''), status: 'Active' });
+    const r = await run(`INSERT INTO departments (name, description, status) VALUES (?,?, 'Active')`, [name.trim(), String(description || '')]);
+    res.status(201).json({ id: r.lastID, name: name.trim(), description: String(description || ''), status: 'Active' });
   } catch (e) {
     if (String(e).includes('UNIQUE')) return res.status(409).json({ error: 'Department already exists' });
-    return res.status(500).json({ error: 'Database error' });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-// ---------- routes: teams ----------
 app.post('/api/teams', auth, async (req, res) => {
-  const { name, description, color } = req.body || {};
-  let { department_id } = req.body || {};
+  const { name, description, color } = req.body || {}; let { department_id } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
-
   try {
     if (!department_id) {
       const dep = await get(`SELECT id FROM departments WHERE status='Active' ORDER BY id ASC LIMIT 1`);
       if (!dep) return res.status(400).json({ error: 'No departments. Create one first or provide department_id.' });
       department_id = dep.id;
     }
-    const r = await run(
-      `INSERT INTO teams (name, description, color, department_id, status) VALUES (?,?,?,?, 'Active')`,
-      [name.trim(), String(description || ''), String(color || ''), department_id]
-    );
-    return res.status(201).json({
-      id: r.lastID, name: name.trim(), description: String(description || ''), color: String(color || ''),
-      department_id, status: 'Active'
-    });
+    const r = await run(`INSERT INTO teams (name, description, color, department_id, status) VALUES (?,?,?,?, 'Active')`,
+      [name.trim(), String(description || ''), String(color || ''), department_id]);
+    res.status(201).json({ id: r.lastID, name: name.trim(), description: String(description || ''), color: String(color || ''), department_id, status: 'Active' });
   } catch (e) {
     if (String(e).includes('UNIQUE')) return res.status(409).json({ error: 'Team already exists' });
     if (String(e).includes('FOREIGN KEY')) return res.status(400).json({ error: 'Invalid department_id' });
-    return res.status(500).json({ error: 'Database error' });
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
-// ---------- routes: break types ----------
-app.get('/api/break-types', auth, async (_req, res) => {
-  try { res.json(await all(`SELECT * FROM break_types WHERE status='Active' ORDER BY id ASC`)); }
-  catch { res.status(500).json({ error: 'Database error' }); }
-});
+app.get('/api/break-types', auth, async (_req, res) => { try { res.json(await all(`SELECT * FROM break_types WHERE status='Active' ORDER BY id ASC`)); } catch { res.status(500).json({ error: 'Database error' }); }});
 app.post('/api/break-types', auth, async (req, res) => {
   const { name, color } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
   try {
-    const r = await run(
-      `INSERT INTO break_types (name, color, status) VALUES (?, ?, 'Active')`,
-      [name.trim(), String(color || '')]
-    );
+    const r = await run(`INSERT INTO break_types (name, color, status) VALUES (?, ?, 'Active')`, [name.trim(), String(color || '')]);
     res.status(201).json({ id: r.lastID, name: name.trim(), color: String(color || ''), status: 'Active' });
   } catch (e) {
     if (String(e).includes('UNIQUE')) return res.status(409).json({ error: 'Break type already exists' });
@@ -296,15 +141,12 @@ app.post('/api/break-types', auth, async (req, res) => {
   }
 });
 
-// ---------- routes: breaks ----------
 app.post('/api/breaks/start', auth, async (req, res) => {
   const { break_type_id } = req.body || {};
   if (!break_type_id) return res.status(400).json({ error: 'break_type_id is required' });
-
   try {
     const bt = await get(`SELECT id FROM break_types WHERE id = ? AND status='Active'`, [break_type_id]);
     if (!bt) return res.status(400).json({ error: 'Invalid break type' });
-
     let emp = await get(`SELECT id, name FROM employees WHERE user_id = ?`, [req.user.id]);
     if (!emp) {
       const user = await get(`SELECT username FROM users WHERE id = ?`, [req.user.id]);
@@ -312,12 +154,9 @@ app.post('/api/breaks/start', auth, async (req, res) => {
       const r = await run(`INSERT INTO employees (user_id, name, status) VALUES (?, ?, 'Active')`, [req.user.id, name]);
       emp = { id: r.lastID, name };
     }
-
     const start = new Date().toISOString();
-    const r = await run(
-      `INSERT INTO breaks (employee_id, break_type_id, start_time) VALUES (?, ?, ?)`,
-      [emp.id, break_type_id, start]
-    );
+    const r = await run(`INSERT INTO breaks (employee_id, break_type_id, start_time) VALUES (?, ?, ?)`,
+      [emp.id, break_type_id, start]);
     res.status(201).json({ id: r.lastID, start_time: start });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
@@ -326,12 +165,8 @@ app.post('/api/breaks/stop', auth, async (_req, res) => {
   try {
     const emp = await get(`SELECT id FROM employees WHERE user_id = ?`, [req.user.id]);
     if (!emp) return res.status(400).json({ error: 'No employee found' });
-    const br = await get(
-      `SELECT * FROM breaks WHERE employee_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1`,
-      [emp.id]
-    );
+    const br = await get(`SELECT * FROM breaks WHERE employee_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1`, [emp.id]);
     if (!br) return res.status(400).json({ error: 'No active break' });
-
     const end = new Date();
     const duration = Math.max(0, Math.round((end - new Date(br.start_time)) / 60000));
     await run(`UPDATE breaks SET end_time = ?, duration = ? WHERE id = ?`, [end.toISOString(), duration, br.id]);
@@ -339,38 +174,20 @@ app.post('/api/breaks/stop', auth, async (_req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
 });
 
-// ---------- routes: employees ----------
-app.get('/api/employees', auth, async (_req, res) => {
-  try { res.json(await all(`SELECT * FROM employees ORDER BY id ASC`)); }
-  catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
-});
+app.get('/api/employees', auth, async (_req, res) => { try { res.json(await all(`SELECT * FROM employees ORDER BY id ASC`)); } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }});
 app.post('/api/employees', auth, async (req, res) => {
   try {
     const { user_id, name, department_id, team_id, status } = req.body || {};
     if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
-
-    if (user_id) {
-      const u = await get(`SELECT id FROM users WHERE id = ?`, [user_id]);
-      if (!u) return res.status(400).json({ error: 'invalid user_id' });
-    }
-    if (department_id) {
-      const d = await get(`SELECT id FROM departments WHERE id = ?`, [department_id]);
-      if (!d) return res.status(400).json({ error: 'invalid department_id' });
-    }
-    if (team_id) {
-      const t = await get(`SELECT id FROM teams WHERE id = ?`, [team_id]);
-      if (!t) return res.status(400).json({ error: 'invalid team_id' });
-    }
-
-    const r = await run(
-      `INSERT INTO employees (user_id, name, department_id, team_id, status) VALUES (?, ?, ?, ?, ?)`,
-      [user_id || null, name.trim(), department_id || null, team_id || null, status || 'Active']
-    );
+    if (user_id) { const u = await get(`SELECT id FROM users WHERE id = ?`, [user_id]); if (!u) return res.status(400).json({ error: 'invalid user_id' }); }
+    if (department_id) { const d = await get(`SELECT id FROM departments WHERE id = ?`, [department_id]); if (!d) return res.status(400).json({ error: 'invalid department_id' }); }
+    if (team_id) { const t = await get(`SELECT id FROM teams WHERE id = ?`, [team_id]); if (!t) return res.status(400).json({ error: 'invalid team_id' }); }
+    const r = await run(`INSERT INTO employees (user_id, name, department_id, team_id, status) VALUES (?, ?, ?, ?, ?)`,
+      [user_id || null, name.trim(), department_id || null, team_id || null, status || 'Active']);
     res.status(201).json({ id: r.lastID, name: name.trim(), user_id: user_id || null, department_id: department_id || null, team_id: team_id || null, status: status || 'Active' });
   } catch (e) {
     if (String(e).includes('UNIQUE') && String(e).includes('user_id')) return res.status(409).json({ error: 'employee for this user already exists' });
-    console.error(e);
-    res.status(500).json({ error: 'Server error' });
+    console.error(e); res.status(500).json({ error: 'Server error' });
   }
 });
 app.put('/api/employees/:id', auth, async (req, res) => {
@@ -390,83 +207,6 @@ app.put('/api/employees/:id', auth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// ---------- routes: status + reports ----------
-app.get('/api/status/live', auth, async (req, res) => {
-  try {
-    const { team_id, department_id } = req.query || {};
-    const where = ['b.end_time IS NULL'];
-    const params = [];
-    if (team_id) { where.push('e.team_id = ?'); params.push(parseInt(team_id, 10)); }
-    if (department_id) { where.push('e.department_id = ?'); params.push(parseInt(department_id, 10)); }
-
-    const rows = await all(
-      `
-      SELECT 
-        b.id as break_id, b.start_time,
-        e.id as employee_id, e.name as employee_name,
-        t.name as team_name, d.name as department_name,
-        bt.name as break_type
-      FROM breaks b
-      JOIN employees e ON e.id = b.employee_id
-      LEFT JOIN teams t ON t.id = e.team_id
-      LEFT JOIN departments d ON d.id = e.department_id
-      LEFT JOIN break_types bt ON bt.id = b.break_type_id
-      WHERE ${where.join(' AND ')}
-      ORDER BY b.start_time ASC
-      `,
-      params
-    );
-    res.json(rows);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
-});
-
-app.get('/api/reports/usage', auth, async (req, res) => {
-  try {
-    const { from, to, group } = req.query || {};
-    const fromIso = parseIso(from);
-    const toIso = parseIso(to);
-    const where = ['b.end_time IS NOT NULL'];
-    const params = [];
-    if (fromIso) { where.push('b.start_time >= ?'); params.push(fromIso); }
-    if (toIso)   { where.push('b.start_time <= ?'); params.push(toIso); }
-
-    let select, groupBy, labelField;
-    switch ((group || 'employee').toLowerCase()) {
-      case 'team':
-        select = `t.id as team_id, t.name as team_name`;
-        groupBy = `t.id, t.name`;
-        labelField = 'team_name';
-        break;
-      case 'break_type':
-        select = `bt.id as break_type_id, bt.name as break_type_name`;
-        groupBy = `bt.id, bt.name`;
-        labelField = 'break_type_name';
-        break;
-      default:
-        select = `e.id as employee_id, e.name as employee_name`;
-        groupBy = `e.id, e.name`;
-        labelField = 'employee_name';
-        break;
-    }
-
-    const rows = await all(
-      `
-      SELECT ${select}, COALESCE(SUM(COALESCE(b.duration,0)),0) as total_minutes, COUNT(*) as breaks_count
-      FROM breaks b
-      JOIN employees e ON e.id = b.employee_id
-      LEFT JOIN teams t ON t.id = e.team_id
-      LEFT JOIN break_types bt ON bt.id = b.break_type_id
-      WHERE ${where.join(' AND ')}
-      GROUP BY ${groupBy}
-      ORDER BY total_minutes DESC, ${labelField} ASC
-      `,
-      params
-    );
-    res.json(rows);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Database error' }); }
-});
-
-// ---------- serve built UI (AFTER /api routes, BEFORE 404) ----------
 const publicDir = path.resolve(__dirname, 'public');
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir, { index: 'index.html', maxAge: '15m' }));
@@ -477,11 +217,9 @@ if (fs.existsSync(publicDir)) {
   console.warn('Static UI directory not found:', publicDir);
 }
 
-// ---------- crash visibility ----------
 process.on('unhandledRejection', err => { console.error('unhandledRejection:', err); process.exit(1); });
 process.on('uncaughtException', err => { console.error('uncaughtException:', err); process.exit(1); });
 
-// ---------- start ----------
 init().then(() => {
   app.listen(PORT, HOST, () => console.log(`Backend running on http://${HOST}:${PORT}`));
 });
