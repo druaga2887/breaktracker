@@ -20,7 +20,7 @@ export async function api(path, { method = 'GET', token, body } = {}) {
     let msg = res.statusText;
     try {
       const data = await res.json();
-      msg = data.message || JSON.stringify(data);
+      msg = data.error || data.message || JSON.stringify(data);
     } catch (_) {}
     throw new Error(`${res.status} ${msg}`);
   }
