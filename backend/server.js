@@ -313,7 +313,7 @@ app.post('/api/breaks/start', auth, async (req,res)=>{
   const r = await run(`INSERT INTO breaks (employee_id,break_type_id,start_time) VALUES (?,?,?)`, [emp.id, break_type_id, start]);
   res.status(201).json({ id:r.lastID, start_time:start });
 });
-app.post('/api/breaks/stop', auth, async (_req,res)=>{
+app.post('/api/breaks/stop', auth, async (req,res)=>{
   const emp = await get(`SELECT id FROM employees WHERE user_id=?`, [req.user.id]).catch(()=>null);
   if (!emp) return res.status(400).json({ error:'No employee found' });
   const br = await get(`SELECT * FROM breaks WHERE employee_id=? AND end_time IS NULL ORDER BY id DESC LIMIT 1`, [emp.id]).catch(()=>null);
