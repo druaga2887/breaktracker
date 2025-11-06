@@ -18,7 +18,7 @@ if (hasModule('express')) {
   process.exit(0);
 }
 
-console.log('Backend dependencies missing. Installing with "npm ci --no-audit --no-fund"...');
+console.log('Backend dependencies missing. Installing project packages...');
 
 try {
   fs.rmSync(path.join(backendDir, 'node_modules'), { recursive: true, force: true });
@@ -26,7 +26,12 @@ try {
   console.warn(`Failed to clean node_modules: ${err.message}`);
 }
 
-const result = spawnSync('npm', ['ci', '--no-audit', '--no-fund'], {
+const hasLockFile = fs.existsSync(path.join(backendDir, 'package-lock.json'));
+const installArgs = hasLockFile
+  ? ['ci', '--no-audit', '--no-fund']
+  : ['install', '--no-audit', '--no-fund'];
+
+const result = spawnSync('npm', installArgs, {
   cwd: backendDir,
   stdio: 'inherit',
 });
