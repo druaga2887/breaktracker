@@ -19,6 +19,7 @@ const dependencies = Object.keys(packageJson.dependencies || {});
 const missingDeps = dependencies.filter((dep) => !hasModule(dep));
 
 if (missingDeps.length === 0) {
+if (hasModule('express')) {
   process.exit(0);
 }
 
@@ -38,6 +39,7 @@ const installArgs = hasLockFile
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const result = spawnSync(npmCommand, installArgs, {
+const result = spawnSync('npm', installArgs, {
   cwd: backendDir,
   stdio: 'inherit',
 });
