@@ -5,6 +5,7 @@
   "type": "commonjs",
   "main": "server.js",
   "scripts": {
+    "prestart": "node scripts/ensure-deps.js",
     "start": "node server.js",
     "pretest": "node scripts/ensure-deps.js",
     "test": "node tests/smoke.js"
