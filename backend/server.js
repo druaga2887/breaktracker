@@ -21,9 +21,127 @@ app.use(express.json());
 app.use(cors());
 app.use(morgan('tiny'));
 
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.json');
+
+const staticDir = path.join(__dirname, 'public');
+const hasStatic = fs.existsSync(staticDir);
+if (!hasStatic) {
+  console.warn('[serveStaticUI] Static UI directory not found:', staticDir);
+}
+
+function defaultDatabase() {
+  return {
+    sequence: {
+      users: 0,
+      departments: 0,
+      teams: 0,
+      break_types: 0,
+      employees: 0,
+      breaks: 0,
+    },
+    users: [],
+    departments: [],
+    teams: [],
+    break_types: [],
+    employees: [],
+    breaks: [],
+  };
+}
+
+function loadDatabase() {
+  try {
+    if (!fs.existsSync(DB_PATH)) {
+      return defaultDatabase();
+    }
+    const contents = fs.readFileSync(DB_PATH, 'utf8');
+    if (!contents.trim()) {
+      return defaultDatabase();
+    }
+    const parsed = JSON.parse(contents);
+    if (!parsed.sequence) {
+      parsed.sequence = defaultDatabase().sequence;
+    }
+    return parsed;
+  } catch (err) {
+    console.error('Failed to read database file, falling back to empty store:', err.message);
+    return defaultDatabase();
+  }
+}
+
+const db = loadDatabase();
+
+function ensureSequence(table) {
+  const maxId = (db[table] || []).reduce((max, item) => (item.id && item.id > max ? item.id : max), 0);
+  db.sequence[table] = Math.max(db.sequence[table] || 0, maxId);
+}
+
+['users', 'departments', 'teams', 'break_types', 'employees', 'breaks'].forEach(ensureSequence);
+
+function persistDatabase() {
+  try {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+  } catch (err) {
+    console.error('Failed to persist database:', err.message);
+  }
+}
+
+function nextId(table) {
+  db.sequence[table] = (db.sequence[table] || 0) + 1;
+  return db.sequence[table];
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${derived}`;
+}
+
+function verifyPassword(password, stored) {
+  if (!stored || typeof stored !== 'string') return false;
+  const [salt, hash] = stored.split(':');
+  if (!salt || !hash) return false;
+  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(derived, 'hex'));
+}
+
+function parseExpiry(expiresIn) {
+  if (!expiresIn) return 0;
+  if (typeof expiresIn === 'number') return expiresIn;
+  const match = String(expiresIn).match(/^(\d+)([smhd])$/);
+  if (!match) return 0;
+  const value = Number(match[1]);
+  const unit = match[2];
+  switch (unit) {
+    case 's':
+      return value;
+    case 'm':
+      return value * 60;
+    case 'h':
+      return value * 3600;
+    case 'd':
+      return value * 86400;
+    default:
+      return 0;
+  }
+}
+
+function signToken(payload, secret, options = {}) {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const basePayload = { ...payload };
+  const expires = parseExpiry(options.expiresIn);
+  if (expires > 0) {
+    basePayload.exp = Math.floor(Date.now() / 1000) + expires;
+  }
+  const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
+  const encodedPayload = Buffer.from(JSON.stringify(basePayload)).toString('base64url');
+  const data = `${encodedHeader}.${encodedPayload}`;
+  const signature = crypto.createHmac('sha256', secret).update(data).digest('base64url');
+  return `${data}.${signature}`;
+}
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.sqlite');
 const db = new sqlite3.Database(DB_PATH);
@@ -54,6 +172,22 @@ async function init() {
     await run(`INSERT INTO users (username,password,must_change_password,name,role) VALUES (?,?,1,?,'admin')`, ['admin', hashed, 'Admin']);
     admin = await get(`SELECT * FROM users WHERE username='admin'`);
     console.log('Seeded admin / admin123');
+  } else if (existing.role !== 'admin') {
+    existing.role = 'admin';
+  }
+
+  const admin = db.users.find((user) => user.username === 'admin');
+  const existingEmployee = db.employees.find((emp) => emp.user_id === admin.id);
+  if (!existingEmployee) {
+    db.employees.push({
+      id: nextId('employees'),
+      user_id: admin.id,
+      name: admin.name || 'Admin',
+      department_id: null,
+      team_id: null,
+      status: 'Active',
+      created_at: new Date().toISOString(),
+    });
   }
   if (admin.role !== 'admin') {
     await run(`UPDATE users SET role='admin' WHERE id=?`, [admin.id]);
@@ -128,6 +262,10 @@ app.post('/api/departments', auth, requireRole('admin'), async (req,res)=>{
     if (String(e).includes('UNIQUE')) return res.status(409).json({ error:'Department already exists' });
     res.status(500).json({ error:'Database error' });
   }
+  user.password = hashPassword(new_password);
+  user.must_change_password = 0;
+  persistDatabase();
+  return { status: 200, body: { success: true } };
 });
 app.put('/api/departments/:id', auth, requireRole('admin'), async (req,res)=>{
   const id = parseInt(req.params.id, 10);
