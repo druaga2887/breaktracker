@@ -6,6 +6,31 @@ const envApiBase =
     ? import.meta.env.VITE_API_URL
     : undefined;
 
+let runtimeApiBase;
+if (typeof window !== 'undefined') {
+  if (window.__API_URL__) {
+    runtimeApiBase = window.__API_URL__;
+  } else if (window.location && window.location.origin) {
+    const { protocol, hostname, origin } = window.location;
+    runtimeApiBase = origin;
+
+    const isLocalHost =
+      hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+
+    if (isLocalHost) {
+      const baseProtocol = protocol || 'http:';
+      runtimeApiBase = `${baseProtocol}//${hostname}:3001`;
+    } else if (hostname) {
+      const codespaceMatch = hostname.match(/^\d+-(.+\.app\.github\.dev)$/);
+      if (codespaceMatch) {
+        runtimeApiBase = `${protocol}//3001-${codespaceMatch[1]}`;
+      }
+    }
+  }
+}
+
+export const API_BASE = envApiBase || runtimeApiBase || 'http://localhost:3001';
+
 const LOCALHOST_NAMES = new Set(['localhost', '127.0.0.1', '::1']);
 
 function unique(items) {
@@ -116,8 +141,8 @@ async function performRequest(base, path, options) {
 
     let message = response.statusText;
     try {
-      const data = await response.json();
-      message = data.error || data.message || JSON.stringify(data);
+      const data = await res.json();
+      msg = data.error || data.message || JSON.stringify(data);
     } catch (_) {}
     throw new Error(`${response.status} ${message}`);
   }

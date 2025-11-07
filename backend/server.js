@@ -1,5 +1,3 @@
-const path = require('path');
-
 try {
   const { ensureDependencies } = require('./scripts/ensure-deps');
   ensureDependencies();
@@ -11,6 +9,7 @@ try {
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
