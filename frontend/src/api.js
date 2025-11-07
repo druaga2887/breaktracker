@@ -12,19 +12,10 @@ if (typeof window !== 'undefined') {
     runtimeApiBase = window.__API_URL__;
   } else if (window.location && window.location.origin) {
     runtimeApiBase = window.location.origin;
-
-    const hostname = window.location.hostname;
-    const port = window.location.port;
-    const isLocalHost =
-      hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-
-    if (isLocalHost && port && port !== '3001') {
-      runtimeApiBase = `${window.location.protocol}//${hostname}:3001`;
-    }
   }
 }
 
-export const API_BASE = envApiBase || runtimeApiBase || 'http://localhost:3001';
+export const API_BASE = envApiBase || runtimeApiBase || '';
 
 export async function api(path, { method = 'GET', token, body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
