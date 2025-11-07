@@ -1,5 +1,3 @@
-const path = require('path');
-
 try {
   const { ensureDependencies } = require('./scripts/ensure-deps');
   ensureDependencies();
