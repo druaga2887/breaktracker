@@ -2,7 +2,7 @@
 
 Break Tracker is an internal web application for managing employee breaks. The project is split into two packages:
 
-- **backend/** — Dependency-free Node HTTP API with JSON persistence and an integrated smoke test suite.
+- **backend/** — Express + SQLite API with automatic migrations and an integrated smoke test suite.
 - **frontend/** — React (Vite) single-page app served by the backend in production.
 
 ## Prerequisites
@@ -13,10 +13,9 @@ Break Tracker is an internal web application for managing employee breaks. The p
 Each package is self-contained. Install dependencies once per package:
 
 ```sh
+npm --prefix backend ci
 npm --prefix frontend ci
 ```
-
-The backend ships without third-party dependencies, so no install step is required there.
 
 ## Automated checks
 Run the backend smoke suite and compile the frontend bundle to verify core workflows before shipping changes.
@@ -26,7 +25,7 @@ npm --prefix backend test
 npm --prefix frontend run build
 ```
 
-The backend test boots the API against an isolated JSON database and walks through:
+The backend test boots the API against an isolated SQLite database and walks through:
 
 - initial admin login and forced password reset
 - role-aware access control

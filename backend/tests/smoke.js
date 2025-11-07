@@ -57,7 +57,7 @@ async function waitForHealth(token) {
 
 async function run() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'breaktracker-test-'));
-  const dbPath = path.join(tmpDir, 'test.json');
+  const dbPath = path.join(tmpDir, 'test.sqlite3');
 
   const server = spawn('node', ['server.js'], {
     cwd: path.join(__dirname, '..'),

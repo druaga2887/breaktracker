@@ -1,1041 +1,527 @@
-const http = require('http');
-const fs = require('fs');
+const express = require('express');
+const cors = require('cors');
+const morgan = require('morgan');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const path = require('path');
-const crypto = require('crypto');
-const { URL } = require('url');
+const fs = require('fs');
+const db = require('./db');
 
-const PORT = Number(process.env.PORT) || 3001;
+const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '0.0.0.0';
-const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.json');
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 
-const staticDir = path.join(__dirname, 'public');
-const hasStatic = fs.existsSync(staticDir);
-if (!hasStatic) {
-  console.warn('[serveStaticUI] Static UI directory not found:', staticDir);
-}
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(morgan('dev'));
 
-function defaultDatabase() {
-  return {
-    sequence: {
-      users: 0,
-      departments: 0,
-      teams: 0,
-      break_types: 0,
-      employees: 0,
-      breaks: 0,
-    },
-    users: [],
-    departments: [],
-    teams: [],
-    break_types: [],
-    employees: [],
-    breaks: [],
-  };
-}
-
-function loadDatabase() {
-  try {
-    if (!fs.existsSync(DB_PATH)) {
-      return defaultDatabase();
-    }
-    const contents = fs.readFileSync(DB_PATH, 'utf8');
-    if (!contents.trim()) {
-      return defaultDatabase();
-    }
-    const parsed = JSON.parse(contents);
-    if (!parsed.sequence) {
-      parsed.sequence = defaultDatabase().sequence;
-    }
-    return parsed;
-  } catch (err) {
-    console.error('Failed to read database file, falling back to empty store:', err.message);
-    return defaultDatabase();
-  }
-}
-
-const db = loadDatabase();
-
-function ensureSequence(table) {
-  const maxId = (db[table] || []).reduce((max, item) => (item.id && item.id > max ? item.id : max), 0);
-  db.sequence[table] = Math.max(db.sequence[table] || 0, maxId);
-}
-
-['users', 'departments', 'teams', 'break_types', 'employees', 'breaks'].forEach(ensureSequence);
-
-function persistDatabase() {
-  try {
-    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-  } catch (err) {
-    console.error('Failed to persist database:', err.message);
-  }
-}
-
-function nextId(table) {
-  db.sequence[table] = (db.sequence[table] || 0) + 1;
-  return db.sequence[table];
-}
-
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${derived}`;
-}
-
-function verifyPassword(password, stored) {
-  if (!stored || typeof stored !== 'string') return false;
-  const [salt, hash] = stored.split(':');
-  if (!salt || !hash) return false;
-  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(derived, 'hex'));
-}
-
-function parseExpiry(expiresIn) {
-  if (!expiresIn) return 0;
-  if (typeof expiresIn === 'number') return expiresIn;
-  const match = String(expiresIn).match(/^(\d+)([smhd])$/);
-  if (!match) return 0;
-  const value = Number(match[1]);
-  const unit = match[2];
-  switch (unit) {
-    case 's':
-      return value;
-    case 'm':
-      return value * 60;
-    case 'h':
-      return value * 3600;
-    case 'd':
-      return value * 86400;
-    default:
-      return 0;
-  }
-}
-
-function signToken(payload, secret, options = {}) {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const basePayload = { ...payload };
-  const expires = parseExpiry(options.expiresIn);
-  if (expires > 0) {
-    basePayload.exp = Math.floor(Date.now() / 1000) + expires;
-  }
-  const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(basePayload)).toString('base64url');
-  const data = `${encodedHeader}.${encodedPayload}`;
-  const signature = crypto.createHmac('sha256', secret).update(data).digest('base64url');
-  return `${data}.${signature}`;
-}
-
-function verifyToken(token, secret) {
-  if (!token) throw new Error('Missing token');
-  const parts = token.split('.');
-  if (parts.length !== 3) throw new Error('Invalid token');
-  const [encodedHeader, encodedPayload, signature] = parts;
-  const data = `${encodedHeader}.${encodedPayload}`;
-  const expected = crypto.createHmac('sha256', secret).update(data).digest('base64url');
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-    throw new Error('Invalid signature');
-  }
-  const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
-  if (payload.exp && Date.now() / 1000 > payload.exp) {
-    throw new Error('Token expired');
-  }
-  return payload;
-}
-
-function seedAdmin() {
-  const existing = db.users.find((user) => user.username === 'admin');
-  if (!existing) {
-    const passwordHash = hashPassword('admin123');
-    const now = new Date().toISOString();
-    const adminUser = {
-      id: nextId('users'),
-      username: 'admin',
-      password: passwordHash,
-      must_change_password: 1,
-      name: 'Admin',
-      role: 'admin',
-      created_at: now,
-    };
-    db.users.push(adminUser);
-    console.log('Seeded admin / admin123');
-  } else if (existing.role !== 'admin') {
-    existing.role = 'admin';
-  }
-
-  const admin = db.users.find((user) => user.username === 'admin');
-  const existingEmployee = db.employees.find((emp) => emp.user_id === admin.id);
-  if (!existingEmployee) {
-    db.employees.push({
-      id: nextId('employees'),
-      user_id: admin.id,
-      name: admin.name || 'Admin',
-      department_id: null,
-      team_id: null,
-      status: 'Active',
-      created_at: new Date().toISOString(),
-    });
-  }
-
-  persistDatabase();
-}
-
-seedAdmin();
-
-const routes = [];
-
-function pathToRegex(pattern) {
-  const keys = [];
-  const regex = pattern
-    .replace(/\//g, '\\/')
-    .replace(/:(\w+)/g, (_, key) => {
-      keys.push(key);
-      return '([^/]+)';
-    });
-  return { regex: new RegExp(`^${regex}$`), keys };
-}
-
-function registerRoute(method, pattern, options, handler) {
-  const { regex, keys } = pathToRegex(pattern);
-  routes.push({ method: method.toUpperCase(), regex, keys, options: options || {}, handler });
-}
-
-function setCors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
-}
-
-function sendJson(res, status, body) {
-  if (res.writableEnded) return;
-  setCors(res);
-  res.statusCode = status;
-  res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify(body));
-}
-
-function notFound(res) {
-  sendJson(res, 404, { error: 'Not found' });
-}
-
-function parseBody(req) {
+function run(sql, params = []) {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk) => {
-      data += chunk;
-      if (data.length > 1e6) {
-        reject(new Error('Payload too large'));
-        req.destroy();
-      }
+    db.run(sql, params, function (err) {
+      if (err) return reject(err);
+      resolve({ lastID: this.lastID, changes: this.changes });
     });
-    req.on('end', () => {
-      if (!data) return resolve({});
-      try {
-        resolve(JSON.parse(data));
-      } catch (err) {
-        reject(new Error('Invalid JSON body'));
-      }
+  });
+}
+
+function get(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) return reject(err);
+      resolve(row);
     });
-    req.on('error', (err) => reject(err));
   });
 }
 
-function getQueryObject(urlObj) {
-  const query = {};
-  for (const [key, value] of urlObj.searchParams.entries()) {
-    if (query[key] === undefined) {
-      query[key] = value;
-    } else if (Array.isArray(query[key])) {
-      query[key].push(value);
-    } else {
-      query[key] = [query[key], value];
-    }
-  }
-  return query;
-}
-
-function serveStatic(req, res, pathname) {
-  if (!hasStatic) return false;
-  let filePath = path.join(staticDir, pathname);
-  if (pathname.endsWith('/')) {
-    filePath = path.join(staticDir, 'index.html');
-  }
-  if (!filePath.startsWith(staticDir)) {
-    return false;
-  }
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(staticDir, 'index.html');
-    if (!fs.existsSync(filePath)) {
-      return false;
-    }
-  }
-  const ext = path.extname(filePath).toLowerCase();
-  const type =
-    ext === '.html' ? 'text/html' :
-    ext === '.css' ? 'text/css' :
-    ext === '.js' ? 'application/javascript' :
-    ext === '.json' ? 'application/json' :
-    ext === '.png' ? 'image/png' :
-    ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
-    ext === '.svg' ? 'image/svg+xml' :
-    'application/octet-stream';
-  const stream = fs.createReadStream(filePath);
-  stream.on('open', () => {
-    res.statusCode = 200;
-    res.setHeader('Content-Type', type);
-    stream.pipe(res);
-  });
-  stream.on('error', (err) => {
-    console.error('Static file error:', err.message);
-    if (!res.headersSent) {
-      res.statusCode = 500;
-      res.end('Internal Server Error');
-    } else {
-      res.destroy();
-    }
-  });
-  return true;
-}
-
-function requireAuth(context) {
-  const authHeader = context.req.headers.authorization || '';
-  if (!authHeader.startsWith('Bearer ')) {
-    throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  }
-  const token = authHeader.slice(7);
-  const payload = verifyToken(token, JWT_SECRET);
-  const user = db.users.find((u) => u.id === payload.id);
-  if (!user) {
-    throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  }
-  context.user = {
-    id: user.id,
-    username: user.username,
-    role: user.role || 'employee',
-    must_change_password: !!user.must_change_password,
-  };
-}
-
-function enforceRoles(context, roles) {
-  if (!context.user || !roles.includes(context.user.role)) {
-    throw Object.assign(new Error('Forbidden'), { status: 403 });
-  }
-}
-
-function normalizedRole(role) {
-  return ['admin', 'manager', 'employee'].includes(role) ? role : 'employee';
-}
-
-function findDepartment(id) {
-  return db.departments.find((dep) => dep.id === id);
-}
-
-function findTeam(id) {
-  return db.teams.find((team) => team.id === id);
-}
-
-function findBreakType(id) {
-  return db.break_types.find((type) => type.id === id);
-}
-
-function ensureDefaultDepartment() {
-  const active = db.departments
-    .filter((dep) => dep.status !== 'Inactive')
-    .sort((a, b) => a.id - b.id);
-  return active.length ? active[0] : null;
-}
-
-registerRoute('GET', '/api/health', {}, async () => ({
-  status: 200,
-  body: {
-    status: 'ok',
-    db: 'ok',
-    version: '1.0.0',
-  },
-}));
-
-registerRoute('POST', '/api/auth/login', {}, async (context) => {
-  const { username, password } = context.body || {};
-  if (!username || !password) {
-    return { status: 400, body: { error: 'Missing credentials' } };
-  }
-  const user = db.users.find((u) => u.username === username);
-  if (!user || !verifyPassword(password, user.password)) {
-    return { status: 401, body: { error: 'Invalid credentials' } };
-  }
-  const token = signToken({ id: user.id, username: user.username, role: user.role || 'employee' }, JWT_SECRET, { expiresIn: '8h' });
-  return {
-    status: 200,
-    body: {
-      token,
-      must_change_password: !!user.must_change_password,
-      role: user.role || 'employee',
-    },
-  };
-});
-
-registerRoute('POST', '/api/auth/change-password', { auth: true }, async (context) => {
-  const { current_password, new_password } = context.body || {};
-  if (!current_password || !new_password || new_password.length < 8) {
-    return { status: 400, body: { error: 'Invalid payload' } };
-  }
-  const user = db.users.find((u) => u.id === context.user.id);
-  if (!user || !verifyPassword(current_password, user.password)) {
-    return { status: 400, body: { error: 'Current password incorrect' } };
-  }
-  user.password = hashPassword(new_password);
-  user.must_change_password = 0;
-  persistDatabase();
-  return { status: 200, body: { success: true } };
-});
-
-registerRoute('GET', '/api/auth/me', { auth: true }, async (context) => {
-  const user = db.users.find((u) => u.id === context.user.id);
-  if (!user) {
-    return { status: 404, body: { error: 'Not found' } };
-  }
-  return {
-    status: 200,
-    body: {
-      id: user.id,
-      username: user.username,
-      name: user.name || '',
-      role: user.role || 'employee',
-      must_change_password: !!user.must_change_password,
-    },
-  };
-});
-
-registerRoute('GET', '/api/departments', { auth: true }, async () => ({
-  status: 200,
-  body: db.departments.slice().sort((a, b) => a.id - b.id),
-}));
-
-registerRoute('POST', '/api/departments', { auth: true, roles: ['admin'] }, async (context) => {
-  const { name, description } = context.body || {};
-  if (!name || !String(name).trim()) {
-    return { status: 400, body: { error: 'Name is required' } };
-  }
-  const trimmed = String(name).trim();
-  const exists = db.departments.find((dep) => dep.name.toLowerCase() === trimmed.toLowerCase());
-  if (exists) {
-    return { status: 409, body: { error: 'Department already exists' } };
-  }
-  const now = new Date().toISOString();
-  const department = {
-    id: nextId('departments'),
-    name: trimmed,
-    description: String(description || ''),
-    status: 'Active',
-    created_at: now,
-  };
-  db.departments.push(department);
-  persistDatabase();
-  return { status: 201, body: department };
-});
-
-registerRoute('PUT', '/api/departments/:id', { auth: true, roles: ['admin'] }, async (context) => {
-  const id = Number(context.params.id);
-  const department = findDepartment(id);
-  if (!department) {
-    return { status: 404, body: { error: 'Not found' } };
-  }
-  const { name, description, status } = context.body || {};
-  let updated = false;
-  if (name !== undefined) {
-    const trimmed = String(name || '').trim();
-    if (!trimmed) {
-      return { status: 400, body: { error: 'Name cannot be empty' } };
-    }
-    const exists = db.departments.find((dep) => dep.id !== id && dep.name.toLowerCase() === trimmed.toLowerCase());
-    if (exists) {
-      return { status: 409, body: { error: 'Department already exists' } };
-    }
-    department.name = trimmed;
-    updated = true;
-  }
-  if (description !== undefined) {
-    department.description = String(description || '');
-    updated = true;
-  }
-  if (status !== undefined) {
-    department.status = String(status || 'Active');
-    updated = true;
-  }
-  if (!updated) {
-    return { status: 400, body: { error: 'nothing to update' } };
-  }
-  persistDatabase();
-  return { status: 200, body: { success: true } };
-});
-
-registerRoute('GET', '/api/teams', { auth: true }, async () => {
-  const rows = db.teams
-    .map((team) => ({
-      ...team,
-      department_name: team.department_id ? (findDepartment(team.department_id)?.name || null) : null,
-    }))
-    .sort((a, b) => a.id - b.id);
-  return { status: 200, body: rows };
-});
-
-registerRoute('POST', '/api/teams', { auth: true, roles: ['admin'] }, async (context) => {
-  const { name, description, color, department_id } = context.body || {};
-  if (!name || !String(name).trim()) {
-    return { status: 400, body: { error: 'Name is required' } };
-  }
-  const trimmed = String(name).trim();
-  const exists = db.teams.find((team) => team.name.toLowerCase() === trimmed.toLowerCase());
-  if (exists) {
-    return { status: 409, body: { error: 'Team already exists' } };
-  }
-  let resolvedDepartmentId = department_id ? Number(department_id) : null;
-  if (!resolvedDepartmentId) {
-    const defaultDepartment = ensureDefaultDepartment();
-    if (!defaultDepartment) {
-      return { status: 400, body: { error: 'No departments. Create one first or provide department_id.' } };
-    }
-    resolvedDepartmentId = defaultDepartment.id;
-  }
-  if (!findDepartment(resolvedDepartmentId)) {
-    return { status: 400, body: { error: 'Invalid department_id' } };
-  }
-  const now = new Date().toISOString();
-  const team = {
-    id: nextId('teams'),
-    name: trimmed,
-    description: String(description || ''),
-    color: String(color || ''),
-    department_id: resolvedDepartmentId,
-    status: 'Active',
-    created_at: now,
-  };
-  db.teams.push(team);
-  persistDatabase();
-  return { status: 201, body: team };
-});
-
-registerRoute('PUT', '/api/teams/:id', { auth: true, roles: ['admin'] }, async (context) => {
-  const id = Number(context.params.id);
-  const team = findTeam(id);
-  if (!team) {
-    return { status: 404, body: { error: 'Not found' } };
-  }
-  const { name, description, color, department_id, status } = context.body || {};
-  let updated = false;
-  if (name !== undefined) {
-    const trimmed = String(name || '').trim();
-    if (!trimmed) {
-      return { status: 400, body: { error: 'Name cannot be empty' } };
-    }
-    const exists = db.teams.find((t) => t.id !== id && t.name.toLowerCase() === trimmed.toLowerCase());
-    if (exists) {
-      return { status: 409, body: { error: 'Team already exists' } };
-    }
-    team.name = trimmed;
-    updated = true;
-  }
-  if (description !== undefined) {
-    team.description = String(description || '');
-    updated = true;
-  }
-  if (color !== undefined) {
-    team.color = String(color || '');
-    updated = true;
-  }
-  if (department_id !== undefined) {
-    if (department_id === null) {
-      team.department_id = null;
-    } else {
-      const depId = Number(department_id);
-      if (!findDepartment(depId)) {
-        return { status: 400, body: { error: 'Invalid department_id' } };
-      }
-      team.department_id = depId;
-    }
-    updated = true;
-  }
-  if (status !== undefined) {
-    team.status = String(status || 'Active');
-    updated = true;
-  }
-  if (!updated) {
-    return { status: 400, body: { error: 'nothing to update' } };
-  }
-  persistDatabase();
-  return { status: 200, body: { success: true } };
-});
-
-registerRoute('GET', '/api/break-types', { auth: true }, async (context) => {
-  const includeInactive = context.query.includeInactive === '1';
-  const rows = db.break_types
-    .filter((type) => includeInactive || type.status === 'Active')
-    .sort((a, b) => a.id - b.id);
-  return { status: 200, body: rows };
-});
-
-registerRoute('POST', '/api/break-types', { auth: true, roles: ['admin'] }, async (context) => {
-  const { name, color } = context.body || {};
-  if (!name || !String(name).trim()) {
-    return { status: 400, body: { error: 'Name is required' } };
-  }
-  const trimmed = String(name).trim();
-  const exists = db.break_types.find((type) => type.name.toLowerCase() === trimmed.toLowerCase());
-  if (exists) {
-    return { status: 409, body: { error: 'Break type already exists' } };
-  }
-  const now = new Date().toISOString();
-  const breakType = {
-    id: nextId('break_types'),
-    name: trimmed,
-    color: String(color || ''),
-    status: 'Active',
-    created_at: now,
-  };
-  db.break_types.push(breakType);
-  persistDatabase();
-  return { status: 201, body: breakType };
-});
-
-registerRoute('PUT', '/api/break-types/:id', { auth: true, roles: ['admin'] }, async (context) => {
-  const id = Number(context.params.id);
-  const breakType = findBreakType(id);
-  if (!breakType) {
-    return { status: 404, body: { error: 'Not found' } };
-  }
-  const { name, color, status } = context.body || {};
-  let updated = false;
-  if (name !== undefined) {
-    const trimmed = String(name || '').trim();
-    if (!trimmed) {
-      return { status: 400, body: { error: 'Name cannot be empty' } };
-    }
-    const exists = db.break_types.find((bt) => bt.id !== id && bt.name.toLowerCase() === trimmed.toLowerCase());
-    if (exists) {
-      return { status: 409, body: { error: 'Break type already exists' } };
-    }
-    breakType.name = trimmed;
-    updated = true;
-  }
-  if (color !== undefined) {
-    breakType.color = String(color || '');
-    updated = true;
-  }
-  if (status !== undefined) {
-    breakType.status = String(status || 'Active');
-    updated = true;
-  }
-  if (!updated) {
-    return { status: 400, body: { error: 'nothing to update' } };
-  }
-  persistDatabase();
-  return { status: 200, body: { success: true } };
-});
-
-registerRoute('GET', '/api/users', { auth: true, roles: ['admin'] }, async () => {
-  const rows = db.users
-    .map((user) => ({
-      id: user.id,
-      username: user.username,
-      must_change_password: !!user.must_change_password,
-      name: user.name || '',
-      role: user.role || 'employee',
-    }))
-    .sort((a, b) => a.id - b.id);
-  return { status: 200, body: rows };
-});
-
-registerRoute('POST', '/api/users', { auth: true, roles: ['admin'] }, async (context) => {
-  const { username, password, name, role = 'employee', must_change_password = 1 } = context.body || {};
-  if (!username || !String(username).trim()) {
-    return { status: 400, body: { error: 'username required' } };
-  }
-  if (!password || password.length < 8) {
-    return { status: 400, body: { error: 'password must be at least 8 characters' } };
-  }
-  const trimmed = String(username).trim();
-  const exists = db.users.find((user) => user.username.toLowerCase() === trimmed.toLowerCase());
-  if (exists) {
-    return { status: 409, body: { error: 'Username already exists' } };
-  }
-  const now = new Date().toISOString();
-  const user = {
-    id: nextId('users'),
-    username: trimmed,
-    password: hashPassword(password),
-    must_change_password: must_change_password ? 1 : 0,
-    name: String(name || ''),
-    role: normalizedRole(role),
-    created_at: now,
-  };
-  db.users.push(user);
-  persistDatabase();
-  return {
-    status: 201,
-    body: {
-      id: user.id,
-      username: user.username,
-      must_change_password: !!user.must_change_password,
-      name: user.name,
-      role: user.role,
-    },
-  };
-});
-
-registerRoute('PUT', '/api/users/:id', { auth: true, roles: ['admin'] }, async (context) => {
-  const id = Number(context.params.id);
-  const user = db.users.find((u) => u.id === id);
-  if (!user) {
-    return { status: 404, body: { error: 'Not found' } };
-  }
-  const { name, password, must_change_password, role } = context.body || {};
-  let updated = false;
-  if (name !== undefined) {
-    user.name = String(name || '');
-    updated = true;
-  }
-  if (must_change_password !== undefined) {
-    user.must_change_password = must_change_password ? 1 : 0;
-    updated = true;
-  }
-  if (role !== undefined) {
-    user.role = normalizedRole(role);
-    updated = true;
-  }
-  if (password !== undefined) {
-    if (!password || password.length < 8) {
-      return { status: 400, body: { error: 'password must be at least 8 characters' } };
-    }
-    user.password = hashPassword(password);
-    if (must_change_password === undefined) {
-      user.must_change_password = 1;
-    }
-    updated = true;
-  }
-  if (!updated) {
-    return { status: 400, body: { error: 'nothing to update' } };
-  }
-  persistDatabase();
-  return { status: 200, body: { success: true } };
-});
-
-registerRoute('GET', '/api/employees', { auth: true, roles: ['admin'] }, async () => {
-  const rows = db.employees.slice().sort((a, b) => a.id - b.id);
-  return { status: 200, body: rows };
-});
-
-registerRoute('POST', '/api/employees', { auth: true, roles: ['admin'] }, async (context) => {
-  const { user_id, name, department_id, team_id, status } = context.body || {};
-  if (!name || !String(name).trim()) {
-    return { status: 400, body: { error: 'name required' } };
-  }
-  if (user_id) {
-    const user = db.users.find((u) => u.id === Number(user_id));
-    if (!user) {
-      return { status: 400, body: { error: 'invalid user_id' } };
-    }
-  }
-  if (department_id) {
-    if (!findDepartment(Number(department_id))) {
-      return { status: 400, body: { error: 'invalid department_id' } };
-    }
-  }
-  if (team_id) {
-    if (!findTeam(Number(team_id))) {
-      return { status: 400, body: { error: 'invalid team_id' } };
-    }
-  }
-  const employee = {
-    id: nextId('employees'),
-    user_id: user_id ? Number(user_id) : null,
-    name: String(name).trim(),
-    department_id: department_id ? Number(department_id) : null,
-    team_id: team_id ? Number(team_id) : null,
-    status: status || 'Active',
-    created_at: new Date().toISOString(),
-  };
-  db.employees.push(employee);
-  persistDatabase();
-  return { status: 201, body: employee };
-});
-
-registerRoute('PUT', '/api/employees/:id', { auth: true, roles: ['admin'] }, async (context) => {
-  const id = Number(context.params.id);
-  const employee = db.employees.find((emp) => emp.id === id);
-  if (!employee) {
-    return { status: 404, body: { error: 'Not found' } };
-  }
-  const { name, department_id, team_id, status, user_id } = context.body || {};
-  let updated = false;
-  if (name !== undefined) {
-    employee.name = String(name || '');
-    updated = true;
-  }
-  if (department_id !== undefined) {
-    employee.department_id = department_id ? Number(department_id) : null;
-    updated = true;
-  }
-  if (team_id !== undefined) {
-    employee.team_id = team_id ? Number(team_id) : null;
-    updated = true;
-  }
-  if (status !== undefined) {
-    employee.status = String(status || 'Active');
-    updated = true;
-  }
-  if (user_id !== undefined) {
-    employee.user_id = user_id ? Number(user_id) : null;
-    updated = true;
-  }
-  if (!updated) {
-    return { status: 400, body: { error: 'nothing to update' } };
-  }
-  persistDatabase();
-  return { status: 200, body: { success: true } };
-});
-
-registerRoute('POST', '/api/breaks/start', { auth: true }, async (context) => {
-  const { break_type_id } = context.body || {};
-  if (!break_type_id) {
-    return { status: 400, body: { error: 'break_type_id is required' } };
-  }
-  const breakType = findBreakType(Number(break_type_id));
-  if (!breakType || breakType.status === 'Inactive') {
-    return { status: 400, body: { error: 'Invalid break type' } };
-  }
-  let employee = db.employees.find((emp) => emp.user_id === context.user.id);
-  if (!employee) {
-    const user = db.users.find((u) => u.id === context.user.id);
-    employee = {
-      id: nextId('employees'),
-      user_id: context.user.id,
-      name: user?.name || user?.username || `User${context.user.id}`,
-      department_id: null,
-      team_id: null,
-      status: 'Active',
-      created_at: new Date().toISOString(),
-    };
-    db.employees.push(employee);
-  }
-  const startTime = new Date().toISOString();
-  const record = {
-    id: nextId('breaks'),
-    employee_id: employee.id,
-    break_type_id: Number(break_type_id),
-    start_time: startTime,
-    end_time: null,
-    duration: null,
-  };
-  db.breaks.push(record);
-  persistDatabase();
-  return { status: 201, body: { id: record.id, start_time: startTime } };
-});
-
-registerRoute('POST', '/api/breaks/stop', { auth: true }, async (context) => {
-  const employee = db.employees.find((emp) => emp.user_id === context.user.id);
-  if (!employee) {
-    return { status: 400, body: { error: 'No employee found' } };
-  }
-  const active = db.breaks
-    .filter((brk) => brk.employee_id === employee.id && !brk.end_time)
-    .sort((a, b) => b.id - a.id)[0];
-  if (!active) {
-    return { status: 400, body: { error: 'No active break' } };
-  }
-  const end = new Date();
-  const duration = Math.max(0, Math.round((end - new Date(active.start_time)) / 60000));
-  active.end_time = end.toISOString();
-  active.duration = duration;
-  persistDatabase();
-  return { status: 200, body: { success: true, duration } };
-});
-
-registerRoute('GET', '/api/status/live', { auth: true, roles: ['manager', 'admin'] }, async () => {
-  const rows = db.breaks
-    .filter((brk) => !brk.end_time)
-    .map((brk) => {
-      const employee = db.employees.find((emp) => emp.id === brk.employee_id);
-      const team = employee?.team_id ? findTeam(employee.team_id) : null;
-      const department = employee?.department_id ? findDepartment(employee.department_id) : null;
-      const breakType = findBreakType(brk.break_type_id);
-      return {
-        break_id: brk.id,
-        employee_name: employee?.name || 'Unknown',
-        employee_id: employee?.id || null,
-        department_id: employee?.department_id || null,
-        team_id: employee?.team_id || null,
-        team_name: team?.name || null,
-        department_name: department?.name || null,
-        break_type: breakType?.name || 'Unknown',
-        break_type_id: breakType?.id || null,
-        start_time: brk.start_time,
-        break_color: breakType?.color || '',
-      };
-    })
-    .sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
-  return { status: 200, body: rows };
-});
-
-registerRoute('GET', '/api/reports/summary', { auth: true, roles: ['manager', 'admin'] }, async (context) => {
-  const { start, end, department_id, team_id, break_type_id } = context.query;
-  const now = new Date();
-  const defaultStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const parsedStart = start ? new Date(start) : defaultStart;
-  const parsedEnd = end ? new Date(end) : now;
-  if (Number.isNaN(parsedStart.getTime())) {
-    return { status: 400, body: { error: 'Invalid start date' } };
-  }
-  if (Number.isNaN(parsedEnd.getTime())) {
-    return { status: 400, body: { error: 'Invalid end date' } };
-  }
-  const startIso = parsedStart.toISOString();
-  const endIso = parsedEnd.toISOString();
-
-  const rows = [];
-  const filters = {
-    department_id: department_id ? Number(department_id) : null,
-    team_id: team_id ? Number(team_id) : null,
-    break_type_id: break_type_id ? Number(break_type_id) : null,
-  };
-
-  const grouped = new Map();
-  for (const brk of db.breaks) {
-    if (!brk.end_time) continue;
-    if (brk.start_time < startIso || brk.start_time > endIso) continue;
-    const employee = db.employees.find((emp) => emp.id === brk.employee_id);
-    if (!employee) continue;
-    if (filters.department_id && employee.department_id !== filters.department_id) continue;
-    if (filters.team_id && employee.team_id !== filters.team_id) continue;
-    if (filters.break_type_id && brk.break_type_id !== filters.break_type_id) continue;
-    const breakType = findBreakType(brk.break_type_id);
-    const key = `${employee.id}:${brk.break_type_id}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, {
-        employee_id: employee.id,
-        employee_name: employee.name,
-        department_id: employee.department_id,
-        team_id: employee.team_id,
-        department_name: employee.department_id ? findDepartment(employee.department_id)?.name || null : null,
-        team_name: employee.team_id ? findTeam(employee.team_id)?.name || null : null,
-        break_type: breakType?.name || 'Unknown',
-        break_type_id: breakType?.id || null,
-        break_count: 0,
-        total_minutes: 0,
-      });
-    }
-    const bucket = grouped.get(key);
-    bucket.break_count += 1;
-    bucket.total_minutes += brk.duration || 0;
-  }
-
-  for (const value of grouped.values()) {
-    rows.push(value);
-  }
-  rows.sort((a, b) => {
-    const dep = (a.department_name || '').localeCompare(b.department_name || '');
-    if (dep !== 0) return dep;
-    const team = (a.team_name || '').localeCompare(b.team_name || '');
-    if (team !== 0) return team;
-    const emp = (a.employee_name || '').localeCompare(b.employee_name || '');
-    if (emp !== 0) return emp;
-    return (a.break_type || '').localeCompare(b.break_type || '');
-  });
-
-  return {
-    status: 200,
-    body: {
-      start: startIso,
-      end: endIso,
-      rows,
-    },
-  };
-});
-
-const server = http.createServer(async (req, res) => {
-  const startTime = Date.now();
-  const method = req.method.toUpperCase();
-  const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = urlObj.pathname;
-
-  if (method === 'OPTIONS') {
-    setCors(res);
-    res.statusCode = 204;
-    res.end();
-    return;
-  }
-
-  const route = routes.find((r) => r.method === method && r.regex.test(pathname));
-
-  if (!route) {
-    if ((method === 'GET' || method === 'HEAD') && !pathname.startsWith('/api')) {
-      if (serveStatic(req, res, pathname)) {
-        return;
-      }
-    }
-    if (!res.writableEnded) {
-      notFound(res);
-    }
-    return;
-  }
-
-  const match = pathname.match(route.regex);
-  const params = {};
-  if (match) {
-    route.keys.forEach((key, index) => {
-      params[key] = match[index + 1];
+function all(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows);
     });
+  });
+}
+
+async function seedAdmin() {
+  const admin = await get('SELECT id FROM users WHERE username = ?', ['admin']);
+  if (!admin) {
+    const hash = await bcrypt.hash('admin123', 10);
+    await run(
+      `INSERT INTO users (username, password, must_change_password, name, role, status)
+       VALUES (?, ?, 1, ?, 'admin', 'Active')`,
+      ['admin', hash, 'Admin']
+    );
+    console.log('Seeded default admin user (admin / admin123).');
   }
+}
 
-  const context = {
-    req,
-    res,
-    params,
-    query: getQueryObject(urlObj),
-    body: {},
-    user: null,
+function toUserResponse(row) {
+  if (!row) return null;
+  const { password, ...rest } = row;
+  return {
+    ...rest,
+    must_change_password: Boolean(row.must_change_password),
   };
+}
 
+function authMiddleware(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const token = header.slice('Bearer '.length);
   try {
-    if (route.options && route.options.auth) {
-      requireAuth(context);
-      if (route.options.roles) {
-        enforceRoles(context, route.options.roles);
-      }
-    }
-
-    if (['POST', 'PUT'].includes(method)) {
-      context.body = await parseBody(req);
-    }
-
-    const result = await route.handler(context);
-    if (result && !res.writableEnded) {
-      sendJson(res, result.status || 200, result.body || {});
-    }
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+    next();
   } catch (err) {
-    const status = err.status || 500;
-    if (status >= 500) {
-      console.error('Request error:', err);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
-    sendJson(res, status, { error: err.status ? err.message : 'Internal Server Error' });
-  } finally {
-    const duration = Date.now() - startTime;
-    if (!res.headersSent) {
-      res.setHeader('X-Response-Time', `${duration}ms`);
+    next();
+  };
+}
+
+app.get('/api/health', async (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
+  try {
+    const user = await get('SELECT * FROM users WHERE username = ? AND status = "Active"', [username]);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
-    console.log(`${method} ${pathname} -> ${res.statusCode} (${duration}ms)`);
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, {
+      expiresIn: '8h',
+    });
+    res.json({
+      token,
+      role: user.role,
+      must_change_password: Boolean(user.must_change_password),
+      name: user.name,
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Failed to login' });
   }
 });
 
-process.on('unhandledRejection', (err) => {
-  console.error('unhandledRejection:', err);
-  process.exit(1);
+app.post('/api/auth/change-password', authMiddleware, async (req, res) => {
+  const { current_password, new_password } = req.body || {};
+  if (!current_password || !new_password) {
+    return res.status(400).json({ error: 'Both current and new password are required' });
+  }
+  try {
+    const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const ok = await bcrypt.compare(current_password, user.password);
+    if (!ok) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
+    }
+    const hash = await bcrypt.hash(new_password, 10);
+    await run('UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?', [hash, req.user.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('uncaughtException:', err);
-  process.exit(1);
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  try {
+    const user = await get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(toUserResponse(user));
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load profile' });
+  }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Backend running on http://${HOST}:${PORT}`);
+app.get('/api/departments', authMiddleware, async (_req, res) => {
+  try {
+    const rows = await all('SELECT * FROM departments');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load departments' });
+  }
 });
+
+app.post('/api/departments', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, description = '', status = 'Active' } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'Name is required' });
+  try {
+    const result = await run('INSERT INTO departments (name, description, status) VALUES (?, ?, ?)', [name, description, status]);
+    const created = await get('SELECT * FROM departments WHERE id = ?', [result.lastID]);
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create department' });
+  }
+});
+
+app.put('/api/departments/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, description, status } = req.body || {};
+  try {
+    const existing = await get('SELECT * FROM departments WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'Department not found' });
+    await run(
+      'UPDATE departments SET name = ?, description = ?, status = ? WHERE id = ?',
+      [name ?? existing.name, description ?? existing.description, status ?? existing.status, req.params.id]
+    );
+    const updated = await get('SELECT * FROM departments WHERE id = ?', [req.params.id]);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update department' });
+  }
+});
+
+app.get('/api/teams', authMiddleware, async (_req, res) => {
+  try {
+    const rows = await all(
+      `SELECT teams.*, departments.name AS department_name
+       FROM teams
+       LEFT JOIN departments ON teams.department_id = departments.id`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load teams' });
+  }
+});
+
+app.post('/api/teams', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, description = '', department_id, status = 'Active' } = req.body || {};
+  if (!name || !department_id) {
+    return res.status(400).json({ error: 'Name and department are required' });
+  }
+  try {
+    const department = await get('SELECT id FROM departments WHERE id = ?', [department_id]);
+    if (!department) return res.status(400).json({ error: 'Invalid department' });
+    const result = await run(
+      'INSERT INTO teams (name, description, department_id, status) VALUES (?, ?, ?, ?)',
+      [name, description, department_id, status]
+    );
+    const created = await get('SELECT * FROM teams WHERE id = ?', [result.lastID]);
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create team' });
+  }
+});
+
+app.put('/api/teams/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, description, department_id, status } = req.body || {};
+  try {
+    const existing = await get('SELECT * FROM teams WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'Team not found' });
+    const deptId = department_id ?? existing.department_id;
+    const department = await get('SELECT id FROM departments WHERE id = ?', [deptId]);
+    if (!department) return res.status(400).json({ error: 'Invalid department' });
+    await run(
+      'UPDATE teams SET name = ?, description = ?, department_id = ?, status = ? WHERE id = ?',
+      [name ?? existing.name, description ?? existing.description, deptId, status ?? existing.status, req.params.id]
+    );
+    const updated = await get('SELECT * FROM teams WHERE id = ?', [req.params.id]);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update team' });
+  }
+});
+
+app.get('/api/break-types', authMiddleware, async (_req, res) => {
+  try {
+    const rows = await all('SELECT * FROM break_types');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load break types' });
+  }
+});
+
+app.post('/api/break-types', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, color = '#cccccc', status = 'Active' } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'Name is required' });
+  try {
+    const result = await run('INSERT INTO break_types (name, color, status) VALUES (?, ?, ?)', [name, color, status]);
+    const created = await get('SELECT * FROM break_types WHERE id = ?', [result.lastID]);
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create break type' });
+  }
+});
+
+app.put('/api/break-types/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, color, status } = req.body || {};
+  try {
+    const existing = await get('SELECT * FROM break_types WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'Break type not found' });
+    await run(
+      'UPDATE break_types SET name = ?, color = ?, status = ? WHERE id = ?',
+      [name ?? existing.name, color ?? existing.color, status ?? existing.status, req.params.id]
+    );
+    const updated = await get('SELECT * FROM break_types WHERE id = ?', [req.params.id]);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update break type' });
+  }
+});
+
+app.get('/api/users', authMiddleware, requireRole('admin'), async (_req, res) => {
+  try {
+    const rows = await all('SELECT id, username, name, role, status, must_change_password FROM users');
+    res.json(rows.map(toUserResponse));
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load users' });
+  }
+});
+
+app.post('/api/users', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { username, password, name, role = 'employee', must_change_password = 1, status = 'Active' } = req.body || {};
+  if (!username || !password || !name) {
+    return res.status(400).json({ error: 'Username, password, and name are required' });
+  }
+  if (!['admin', 'manager', 'employee'].includes(role)) {
+    return res.status(400).json({ error: 'Invalid role' });
+  }
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const result = await run(
+      `INSERT INTO users (username, password, name, role, must_change_password, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [username, hash, name, role, must_change_password ? 1 : 0, status]
+    );
+    const created = await get('SELECT * FROM users WHERE id = ?', [result.lastID]);
+    res.status(201).json(toUserResponse(created));
+  } catch (err) {
+    if (err && err.message.includes('UNIQUE')) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+app.put('/api/users/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, role, status, must_change_password } = req.body || {};
+  try {
+    const existing = await get('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'User not found' });
+    const updatedRole = role ?? existing.role;
+    if (!['admin', 'manager', 'employee'].includes(updatedRole)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+    await run(
+      'UPDATE users SET name = ?, role = ?, status = ?, must_change_password = ? WHERE id = ?',
+      [
+        name ?? existing.name,
+        updatedRole,
+        status ?? existing.status,
+        must_change_password === undefined ? existing.must_change_password : must_change_password ? 1 : 0,
+        req.params.id,
+      ]
+    );
+    const updated = await get('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    res.json(toUserResponse(updated));
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+app.get('/api/employees', authMiddleware, async (_req, res) => {
+  try {
+    const rows = await all(
+      `SELECT employees.*, users.username, users.role
+       FROM employees
+       LEFT JOIN users ON employees.user_id = users.id`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load employees' });
+  }
+});
+
+app.post('/api/employees', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { user_id, name, department_id, team_id, status = 'Active' } = req.body || {};
+  if (!user_id || !name) {
+    return res.status(400).json({ error: 'User and name are required' });
+  }
+  try {
+    const user = await get('SELECT id FROM users WHERE id = ?', [user_id]);
+    if (!user) return res.status(400).json({ error: 'Invalid user' });
+    if (department_id) {
+      const dept = await get('SELECT id FROM departments WHERE id = ?', [department_id]);
+      if (!dept) return res.status(400).json({ error: 'Invalid department' });
+    }
+    if (team_id) {
+      const team = await get('SELECT id FROM teams WHERE id = ?', [team_id]);
+      if (!team) return res.status(400).json({ error: 'Invalid team' });
+    }
+    const result = await run(
+      `INSERT INTO employees (user_id, name, department_id, team_id, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [user_id, name, department_id || null, team_id || null, status]
+    );
+    const created = await get('SELECT * FROM employees WHERE id = ?', [result.lastID]);
+    res.status(201).json(created);
+  } catch (err) {
+    if (err && err.message.includes('UNIQUE')) {
+      return res.status(400).json({ error: 'Employee already exists for this user' });
+    }
+    res.status(500).json({ error: 'Failed to create employee' });
+  }
+});
+
+app.put('/api/employees/:id', authMiddleware, requireRole('admin'), async (req, res) => {
+  const { name, department_id, team_id, status } = req.body || {};
+  try {
+    const existing = await get('SELECT * FROM employees WHERE id = ?', [req.params.id]);
+    if (!existing) return res.status(404).json({ error: 'Employee not found' });
+    const deptId = department_id ?? existing.department_id;
+    const teamId = team_id ?? existing.team_id;
+    if (deptId) {
+      const dept = await get('SELECT id FROM departments WHERE id = ?', [deptId]);
+      if (!dept) return res.status(400).json({ error: 'Invalid department' });
+    }
+    if (teamId) {
+      const team = await get('SELECT id FROM teams WHERE id = ?', [teamId]);
+      if (!team) return res.status(400).json({ error: 'Invalid team' });
+    }
+    await run(
+      `UPDATE employees SET name = ?, department_id = ?, team_id = ?, status = ? WHERE id = ?`,
+      [
+        name ?? existing.name,
+        deptId || null,
+        teamId || null,
+        status ?? existing.status,
+        req.params.id,
+      ]
+    );
+    const updated = await get('SELECT * FROM employees WHERE id = ?', [req.params.id]);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update employee' });
+  }
+});
+
+async function getEmployeeForUser(userId) {
+  return get('SELECT * FROM employees WHERE user_id = ? AND status = "Active"', [userId]);
+}
+
+app.post('/api/breaks/start', authMiddleware, requireRole('admin', 'manager', 'employee'), async (req, res) => {
+  const { break_type_id } = req.body || {};
+  if (!break_type_id) return res.status(400).json({ error: 'Break type is required' });
+  try {
+    const breakType = await get('SELECT * FROM break_types WHERE id = ? AND status = "Active"', [break_type_id]);
+    if (!breakType) return res.status(400).json({ error: 'Invalid break type' });
+    const employee = await getEmployeeForUser(req.user.id);
+    if (!employee) return res.status(400).json({ error: 'No employee record for user' });
+    const active = await get('SELECT * FROM breaks WHERE employee_id = ? AND end_time IS NULL', [employee.id]);
+    if (active) return res.status(400).json({ error: 'Break already active' });
+    const now = new Date().toISOString();
+    const result = await run(
+      'INSERT INTO breaks (employee_id, break_type_id, start_time) VALUES (?, ?, ?)',
+      [employee.id, break_type_id, now]
+    );
+    const created = await get('SELECT * FROM breaks WHERE id = ?', [result.lastID]);
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to start break' });
+  }
+});
+
+app.post('/api/breaks/stop', authMiddleware, requireRole('admin', 'manager', 'employee'), async (req, res) => {
+  try {
+    const employee = await getEmployeeForUser(req.user.id);
+    if (!employee) return res.status(400).json({ error: 'No employee record for user' });
+    const active = await get('SELECT * FROM breaks WHERE employee_id = ? AND end_time IS NULL', [employee.id]);
+    if (!active) return res.status(400).json({ error: 'No active break' });
+    const end = new Date();
+    const start = new Date(active.start_time);
+    const duration = Math.round((end.getTime() - start.getTime()) / 60000);
+    await run('UPDATE breaks SET end_time = ?, duration = ? WHERE id = ?', [end.toISOString(), duration, active.id]);
+    const updated = await get('SELECT * FROM breaks WHERE id = ?', [active.id]);
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to stop break' });
+  }
+});
+
+app.get('/api/status/live', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT breaks.*, employees.name AS employee_name, break_types.name AS break_type_name,
+              employees.department_id, employees.team_id
+       FROM breaks
+       INNER JOIN employees ON breaks.employee_id = employees.id
+       INNER JOIN break_types ON breaks.break_type_id = break_types.id
+       WHERE breaks.end_time IS NULL`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load live status' });
+  }
+});
+
+app.get('/api/reports/summary', authMiddleware, requireRole('admin', 'manager'), async (req, res) => {
+  const { start, end } = req.query;
+  const startDate = start ? new Date(start) : null;
+  const endDate = end ? new Date(end) : null;
+  const params = [];
+  let where = 'WHERE breaks.end_time IS NOT NULL';
+  if (startDate) {
+    where += ' AND breaks.start_time >= ?';
+    params.push(new Date(startDate).toISOString());
+  }
+  if (endDate) {
+    where += ' AND breaks.end_time <= ?';
+    params.push(new Date(endDate).toISOString());
+  }
+  try {
+    const rows = await all(
+      `SELECT employees.name AS employee_name,
+              SUM(breaks.duration) AS total_minutes,
+              COUNT(breaks.id) AS break_count
+       FROM breaks
+       INNER JOIN employees ON breaks.employee_id = employees.id
+       ${where}
+       GROUP BY employees.id
+       ORDER BY employees.name`,
+      params
+    );
+    res.json({ rows });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load report' });
+  }
+});
+
+const distDir = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+}
+
+seedAdmin()
+  .then(() => {
+    app.listen(PORT, HOST, () => {
+      console.log(`Server listening on http://${HOST}:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to seed admin user', err);
+    process.exit(1);
+  });

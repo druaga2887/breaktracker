@@ -1,6 +1,7 @@
 node_modules/
 .env
 backend/*.sqlite
+backend/*.sqlite3
 backend/data.sqlite
 backend/*.sqlite-*
 backend/data.json
