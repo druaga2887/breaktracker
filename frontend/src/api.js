@@ -11,11 +11,25 @@ if (typeof window !== 'undefined') {
   if (window.__API_URL__) {
     runtimeApiBase = window.__API_URL__;
   } else if (window.location && window.location.origin) {
-    runtimeApiBase = window.location.origin;
+    const { protocol, hostname, origin } = window.location;
+    runtimeApiBase = origin;
+
+    const isLocalHost =
+      hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+
+    if (isLocalHost) {
+      const baseProtocol = protocol || 'http:';
+      runtimeApiBase = `${baseProtocol}//${hostname}:3001`;
+    } else if (hostname) {
+      const codespaceMatch = hostname.match(/^\d+-(.+\.app\.github\.dev)$/);
+      if (codespaceMatch) {
+        runtimeApiBase = `${protocol}//3001-${codespaceMatch[1]}`;
+      }
+    }
   }
 }
 
-export const API_BASE = envApiBase || runtimeApiBase || '';
+export const API_BASE = envApiBase || runtimeApiBase || 'http://localhost:3001';
 
 export async function api(path, { method = 'GET', token, body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
