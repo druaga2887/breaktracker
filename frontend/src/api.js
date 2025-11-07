@@ -1,10 +1,21 @@
 // Simple fetch wrapper that talks to the backend API
-export const API_BASE =
-  (typeof import.meta !== 'undefined' &&
-    import.meta.env &&
-    import.meta.env.VITE_API_URL) ||
-  window.__API_URL__ ||
-  'http://localhost:3001';
+const envApiBase =
+  typeof import.meta !== 'undefined' &&
+  import.meta.env &&
+  import.meta.env.VITE_API_URL
+    ? import.meta.env.VITE_API_URL
+    : undefined;
+
+let runtimeApiBase;
+if (typeof window !== 'undefined') {
+  if (window.__API_URL__) {
+    runtimeApiBase = window.__API_URL__;
+  } else if (window.location && window.location.origin) {
+    runtimeApiBase = window.location.origin;
+  }
+}
+
+export const API_BASE = envApiBase || runtimeApiBase || '';
 
 export async function api(path, { method = 'GET', token, body } = {}) {
   const headers = { 'Content-Type': 'application/json' };
