@@ -3,7 +3,6 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { ensureDependencies } = require('../scripts/ensure-deps');
 
 const SERVER_PORT = 4100;
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
@@ -58,13 +57,6 @@ async function waitForHealth(token) {
 }
 
 async function run() {
-  try {
-    ensureDependencies();
-  } catch (err) {
-    console.error(`Failed to ensure backend dependencies: ${err.message}`);
-    process.exit(1);
-  }
-
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'breaktracker-test-'));
   const dbPath = path.join(tmpDir, 'test.sqlite');
 
