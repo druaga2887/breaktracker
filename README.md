@@ -48,19 +48,19 @@ During manual testing, confirm:
 GitHub Actions installs dependencies, runs the backend smoke tests, and verifies a production build of the frontend. Keep these commands green locally to ensure the pipeline succeeds.
 
 ## Resolving merge conflicts
-If GitHub shows "This branch has conflicts" when you open a pull request, sync your branch with the latest `main` changes and resolve the edits locally:
 
-1. Fetch the newest commits: `git fetch origin`
-2. Switch to your feature branch (for example `work`): `git checkout work`
-3. Merge the updated main branch: `git merge origin/main`
-4. For each file listed with conflicts, open it and remove the `<<<<<<<`, `=======`, and `>>>>>>>` markers, keeping the intended final content.
-5. Once every conflict is resolved, mark the files as ready: `git add <file>`
-6. Verify the project still works by running:
-   ```sh
-   npm --prefix backend test
-   npm --prefix frontend run build
-   ```
-7. Commit the merge: `git commit`
-8. Push the resolved branch back to GitHub: `git push origin work`
+Need to clear the "This branch has conflicts" banner on GitHub? Follow the hands-on walkthrough in
+[`docs/merge-conflicts.md`](docs/merge-conflicts.md). It breaks the process into seven short steps with
+examples of the conflict markers you will see and the exact commands to run.
 
-After these steps, the pull request will update automatically and the "conflicts" banner will disappear.
+At a glance, the flow is:
+
+1. Fetch the latest code from `main`.
+2. Merge it into your branch.
+3. Edit any files that show conflict markers, deleting the `<<<<<<<`, `=======`, and `>>>>>>>` lines.
+4. Mark each fixed file with `git add`.
+5. Re-run the project tests to ensure everything still passes.
+6. Commit the merge and push your branch back to GitHub.
+
+The detailed guide includes optional shortcuts (like keeping either version of a file) and tips for using a
+visual editor if you get stuck.
