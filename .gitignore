@@ -3,7 +3,6 @@ node_modules/
 backend/*.sqlite
 backend/data.sqlite
 backend/*.sqlite-*
-backend/data.json
 frontend/dist/
 .DS_Store
 Thumbs.db
