@@ -1,3 +1,11 @@
+try {
+  const { ensureDependencies } = require('./scripts/ensure-deps');
+  ensureDependencies();
+} catch (err) {
+  console.error(`Failed to prepare backend dependencies: ${err.message}`);
+  process.exit(1);
+}
+
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
