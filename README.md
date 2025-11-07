@@ -46,3 +46,21 @@ During manual testing, confirm:
 
 ## Continuous integration
 GitHub Actions installs dependencies, runs the backend smoke tests, and verifies a production build of the frontend. Keep these commands green locally to ensure the pipeline succeeds.
+
+## Resolving merge conflicts
+If GitHub shows "This branch has conflicts" when you open a pull request, sync your branch with the latest `main` changes and resolve the edits locally:
+
+1. Fetch the newest commits: `git fetch origin`
+2. Switch to your feature branch (for example `work`): `git checkout work`
+3. Merge the updated main branch: `git merge origin/main`
+4. For each file listed with conflicts, open it and remove the `<<<<<<<`, `=======`, and `>>>>>>>` markers, keeping the intended final content.
+5. Once every conflict is resolved, mark the files as ready: `git add <file>`
+6. Verify the project still works by running:
+   ```sh
+   npm --prefix backend test
+   npm --prefix frontend run build
+   ```
+7. Commit the merge: `git commit`
+8. Push the resolved branch back to GitHub: `git push origin work`
+
+After these steps, the pull request will update automatically and the "conflicts" banner will disappear.
